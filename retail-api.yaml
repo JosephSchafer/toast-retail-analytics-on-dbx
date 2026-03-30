@@ -1,0 +1,813 @@
+openapi: 3.0.3
+
+info:
+  version: 1.0.0
+  title: Retail API
+  description: |
+    This API exposes information to power retail applications.
+  contact:
+    name: Toast Retail Team
+  termsOfService: https://pos.toasttab.com/api-terms-of-use
+
+servers:
+  - url: https://ws-sandbox-api.eng.toasttab.com
+
+paths:
+  /v1/purchaseOrders/search:
+    post:
+      summary: Retrieve all purchase orders that meet the specified parameters
+      tags:
+        - Purchase orders
+      operationId: searchPurchaseOrders
+      security:
+        - OAuth2:
+            - retail.inventory:read
+      parameters:
+        - name: Toast-Restaurant-External-ID
+          in: header
+          description: |
+            The Toast identifier of the location queried for retail information.
+          required: true
+          schema:
+            type: string
+        - name: pageToken
+          in: query
+          description: |
+            The page token for the next page of results. If this value is unspecified, the endpoint returns the
+            first page of results.
+          required: false
+          schema:
+            type: string
+      requestBody:
+        description: An request object containing criteria for searching for purchase orders
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseOrdersSearchRequest'
+        required: true
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrdersResponse'
+        '500':
+          description: Internal server error
+  /v1/purchaseOrders/{purchaseOrderId}:
+    get:
+      summary: Retrieve all purchase orders that meet the specified parameters
+      tags:
+        - Purchase orders
+      operationId: getPurchaseOrderById
+      security:
+        - OAuth2:
+            - retail.inventory:read
+      parameters:
+        - name: Toast-Restaurant-External-ID
+          in: header
+          description: |
+            The Toast identifier of the location queried for retail information.
+          required: true
+          schema:
+            type: string
+        - name: purchaseOrderId
+          in: path
+          description: |
+            The identifier of the purchase order.
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrder'
+        '500':
+          description: Internal server error
+  /v1/inventoryHistory/search:
+    post:
+      summary: Get all inventory history at a location
+      tags:
+        - Inventory History
+      operationId: searchInventoryHistory
+      security:
+        - OAuth2:
+            - retail.inventory:read
+      parameters:
+        - name: Toast-Restaurant-External-ID
+          in: header
+          description: |
+            The Toast GUID of the location queried for retail information.
+          required: true
+          schema:
+            type: string
+        - name: pageToken
+          in: query
+          description: |
+            The page token for the next page of results. If this value is unspecified, the endpoint returns the
+            first page of results.
+          required: false
+          schema:
+            type: string
+      requestBody:
+        description: An request object containing criteria for searching for inventory history records
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InventoryHistorySearchRequest'
+        required: true
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryHistoryResponse'
+        '401':
+          description: The client is not authorized to query this endpoint.
+        '403':
+          description: The client does not have the proper permissions to query this endpoint.
+        '500':
+          description: Internal server error
+  /v1/inventoryHistory/{inventoryHistoryEntryId}:
+    get:
+      summary: Retrieve all inventory history records that meet the specified parameters
+      tags:
+        - Inventory History
+      operationId: getInventoryHistoryById
+      security:
+        - OAuth2:
+            - retail.inventory:read
+      parameters:
+        - name: Toast-Restaurant-External-ID
+          in: header
+          description: |
+            The Toast identifier of the location queried for retail information.
+          required: true
+          schema:
+            type: string
+        - name: inventoryHistoryEntryId
+          in: path
+          description: |
+            The identifier of the inventory history.
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryHistoryLogEntry'
+        '500':
+          description: Internal server error
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: /authentication/v1/authentication/customer/oauth/token
+          scopes:
+            retail:read: |
+              Grants integration partners access to read retail information.
+  schemas:
+    PurchaseOrdersSearchRequest:
+      type: object
+      properties:
+        updatedDateRange:
+          $ref: '#/components/schemas/DateRange'
+        includeArchived:
+          type: boolean
+          description: |
+            Determines whether or not to include archived purchase orders. If this value is unspecified,
+            archived purchase orders are not returned in API responses.
+        purchaseOrderStatuses:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchaseOrderStatus'
+    DateRange:
+      type: object
+      required:
+        - startDate
+      properties:
+        startDate:
+          type: string
+          format: date
+          description: The start date of the range
+        endDate:
+          type: string
+          format: date
+          description: The end date of the range
+    PurchaseOrdersResponse:
+      type: object
+      properties:
+        currentPageToken:
+          type: string
+          nullable: false
+          description: The page token the client provided to get the current page of results
+        nextPageToken:
+          type: string
+          nullable: false
+          description: The page token the client can provide to get the next page of results
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchaseOrder'
+    PurchaseOrder:
+      type: object
+      required:
+        - id
+        - createdDate
+        - modifiedDate
+        - archived
+        - status
+        - paid
+        - supplier
+        - supplierNotes
+        - toastGeneratedPurchaseOrderNumber
+        - items
+        - purchaseOrderTotals
+        - purchasingEntityInfo
+      properties:
+        id:
+          type: string
+          format: uuid
+          nullable: false
+          description: The unique identifier of the purchase order.
+        createdDate:
+          type: string
+          format: date-time
+          nullable: false
+          readOnly: true
+          description: The date and time the purchase order was created.
+        modifiedDate:
+          type: string
+          format: date-time
+          nullable: false
+          readOnly: true
+          description: The date and time the purchase order was last modified.
+        archived:
+          type: boolean
+          nullable: false
+          description: Whether the purchase order has been archived.
+        status:
+          type: string
+          nullable: false
+          description: The status of the purchase order.
+          enum:
+            - DRAFT
+            - ORDERED
+            - PARTIALLY_RECEIVED
+            - RECEIVED
+            - VOIDED
+        paid:
+          type: boolean
+          nullable: false
+          description: A flag indicating whether the purchase order has been paid.
+        supplier:
+          $ref: '#/components/schemas/Supplier'
+        toastGeneratedPurchaseOrderNumber:
+          type: number
+          format: int32
+          nullable: false
+          description: Toast generated purchase order number.
+        externalPurchaseOrderNumber:
+          type: string
+          nullable: true
+          description: An optional purchase order number supplied by a Toast user.
+        externalInvoiceNumber:
+          type: string
+          nullable: true
+          description: The invoice number for the invoice associated with this purchase order.
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchaseOrderItem'
+        distributionStrategies:
+          $ref: '#/components/schemas/DistributionStrategies'
+        purchaseOrderTotals:
+          $ref: '#/components/schemas/PurchaseOrderTotals'
+        expectedDate:
+          type: string
+          format: date-time
+          nullable: false
+          description: The expected fulfillment date of the purchase order.
+        purchasingEntityInfo:
+          $ref: '#/components/schemas/PurchasingEntityInfo'
+        supplierNotes:
+          type: string
+          nullable: false
+          description: Notes for the supplier that pertain to ordering.
+        receivingNotes:
+          type: string
+          nullable: false
+          description: Notes that pertain to the receiving of the ordered items.
+    PurchaseOrderStatus:
+      type: string
+      description: The status of the purchase order
+      enum:
+        - DRAFT
+        - ORDERED
+        - PARTIALLY_RECEIVED
+        - RECEIVED
+        - VOIDED
+    PurchaseOrderItem:
+      type: object
+      required:
+        - itemVersionId
+        - name
+        - orderedItemInfo
+        - taxes
+        - fees
+        - discounts
+        - receivedEvents
+      properties:
+        itemVersionId:
+          type: string
+          format: uuid
+          nullable: false
+          description: The Toast ID of the ordered item.
+        name:
+          type: string
+          nullable: false
+          description: The name of the ordered item.
+        supplierItemId:
+          type: string
+          nullable: true
+          description: The supplier item ID of the ordered item.
+        orderedItemInfo:
+          $ref: '#/components/schemas/OrderedItemInfo'
+        taxes:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tax'
+        fees:
+          type: array
+          items:
+            $ref: '#/components/schemas/Fee'
+        discounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchasingItemDiscount'
+        receivedEvents:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReceivedEvent'
+    OrderedItemInfo:
+      type: object
+      required:
+        - orderedQuantity
+        - orderedUnit
+      properties:
+        orderedQuantity:
+          type: number
+          format: double
+          nullable: false
+          description: The quantity ordered.
+        orderedUnit:
+          $ref: '#/components/schemas/NamedItemReceivingUnit'
+        orderedCost:
+          $ref: '#/components/schemas/ItemCosts'
+    NamedItemReceivingUnit:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          nullable: false
+          description: The name of the item receiving unit.
+        quantityInUnit:
+          type: number
+          format: double
+          nullable: false
+          description: |
+            The quantity that the receiving unit comes in. For example, if a case of wine contains 12 bottles,
+            the quantityInUnit would be 12.
+    ItemCosts:
+      type: object
+      properties:
+        baseCost:
+          type: number
+          format: double
+          nullable: true
+          description: The unit cost of the ordered item.
+        subtotal:
+          type: number
+          format: double
+          nullable: true
+          description: The total cost of the line item (excluding item-level taxes, fees and discounts).
+        total:
+          type: number
+          format: double
+          nullable: true
+          description: The total cost of the line item (including item-level taxes, fees and discounts).
+        landedCost:
+          type: number
+          format: double
+          nullable: true
+          description: The unit cost of the purchasable item, used in calculating the cost of goods sold.
+    PurchasingEntityInfo:
+      type: object
+      required:
+        - taxes
+        - fees
+        - discounts
+      properties:
+        taxes:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tax'
+        fees:
+          type: array
+          items:
+            $ref: '#/components/schemas/Fee'
+        discounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchasingEntityDiscount'
+    Tax:
+      type: object
+      properties:
+        name:
+          type: string
+          nullable: true
+          description: The name of the tax.
+        absoluteValue:
+          type: number
+          format: double
+          nullable: true
+          description: The absolute value of the tax.
+        percentageValue:
+          type: number
+          format: double
+          nullable: true
+          description: The percentage value of the tax.
+    Fee:
+      type: object
+      properties:
+        name:
+          type: string
+          nullable: true
+          description: The name of the fee.
+        absoluteValue:
+          type: number
+          format: double
+          nullable: true
+          description: The absolute value of the fee.
+        percentageValue:
+          type: number
+          format: double
+          nullable: true
+          description: The percentage value of the fee.
+        isTaxable:
+          type: boolean
+          nullable: false
+          description: Whether or not the fee is taxable.
+    PurchasingItemDiscount:
+      type: object
+      properties:
+        name:
+          type: string
+          nullable: true
+          description: The name of the discount.
+        absoluteValue:
+          type: number
+          format: double
+          nullable: true
+          description: The absolute value of the discount.
+        percentageValue:
+          type: number
+          format: double
+          nullable: true
+          description: The percentage value of the discount.
+    PurchasingEntityDiscount:
+      type: object
+      properties:
+        name:
+          type: string
+          nullable: true
+          description: The name of the discount.
+        absoluteValue:
+          type: number
+          format: double
+          nullable: true
+          description: The absolute value of the discount.
+        percentageValue:
+          type: number
+          format: double
+          nullable: true
+          description: The percentage value of the discount.
+        combineWithItemDiscounts:
+          type: boolean
+          nullable: false
+          description: Describes whether or not to combine this purchasing entity discount with item discounts.
+    DistributionStrategies:
+      type: object
+      properties:
+        taxDistributionStrategy:
+          $ref: '#/components/schemas/AdjustmentDistributionStrategy'
+        feesDistributionStrategy:
+          $ref: '#/components/schemas/AdjustmentDistributionStrategy'
+        discountsDistributionStrategy:
+          $ref: '#/components/schemas/AdjustmentDistributionStrategy'
+    PurchaseOrderTotals:
+      type: object
+      required:
+        - itemsSubtotal
+        - totalCost
+      properties:
+        itemsSubtotal:
+          type: number
+          format: double
+          nullable: true
+          description: The sum of the items' costs without any taxes, fees or discounts.
+        subtotalCost:
+          type: number
+          format: double
+          nullable: true
+          description: The total cost of the invoice before invoice-level taxes, fees or discounts.
+        totalCost:
+          type: number
+          format: double
+          nullable: false
+          description: The total cost of the invoice after invoice-level taxes, fees or discounts.
+    AdjustmentDistributionStrategy:
+      type: string
+      description: |
+        The distribution details of how purchase order adjustments were applied to item level costs.
+      enum:
+        - ITEM_TOTAL_COST
+        - ITEM_QUANTITY
+        - EQUALLY_PER_ITEM
+    ReceivedEvent:
+      type: object
+      required:
+        - receivedQuantity
+      properties:
+        receivedQuantity:
+          type: number
+          format: double
+          nullable: false
+          description: The quantity of the item.
+        receivedUnit:
+          $ref: '#/components/schemas/NamedItemReceivingUnit'
+        receivedCosts:
+          $ref: '#/components/schemas/ItemCosts'
+        inventoryHistoryId:
+          type: string
+          format: uuid
+          nullable: false
+          description: The ID of the inventory history event associated with this received event.
+    Supplier:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: string
+          format: uuid
+          nullable: false
+          readOnly: true
+          description: The unique identifier of the supplier.
+        name:
+          type: string
+          nullable: false
+          description: The name of the supplier.
+        accountNumber:
+          type: string
+          nullable: true
+          description: The account number of the supplier.
+        address:
+          $ref: '#/components/schemas/Address'
+        contactName:
+          type: string
+          nullable: true
+          description: The name of the supplier contact.
+        phoneDetails:
+          $ref: '#/components/schemas/PhoneDetails'
+        email:
+          type: string
+          nullable: true
+          description: The email of the supplier.
+    PhoneDetails:
+      type: object
+      required:
+        - countryCode
+        - countryIsoCode
+        - nationalNumber
+      properties:
+        countryCode:
+          type: string
+          nullable: false
+          description: The country code of the phone number.
+        countryIsoCode:
+          type: string
+          nullable: false
+          description: The ISO country code of the phone number.
+        nationalNumber:
+          type: string
+          nullable: false
+          description: The national number part of the phone number.
+    Address:
+      type: object
+      required:
+        - regionCode
+        - addressLines
+        - revision
+      properties:
+        regionCode:
+          type: string
+          nullable: false
+          description: The region code of the address.
+        addressLines:
+          type: array
+          items:
+            type: string
+          nullable: false
+          description: The address lines of the address.
+        revision:
+          type: integer
+          format: int32
+          nullable: false
+          description: The revision number of the address.
+        languageCode:
+          type: string
+          nullable: true
+          description: The language code of the address.
+        postalCode:
+          type: string
+          nullable: true
+          description: The postal code of the address.
+        sortingCode:
+          type: string
+          nullable: true
+          description: The sorting code of the address.
+        administrativeArea:
+          type: string
+          nullable: true
+          description: The administrative area of the address.
+        locality:
+          type: string
+          nullable: true
+          description: The locality of the address.
+        sublocality:
+          type: string
+          nullable: true
+          description: The sublocality of the address.
+    InventoryHistorySearchRequest:
+      type: object
+      properties:
+        updatedDateRange:
+          $ref: '#/components/schemas/DateRange'
+        adjustmentType:
+          type: array
+          items:
+            $ref: '#/components/schemas/InventoryHistoryAdjustmentType'
+    InventoryHistoryAdjustmentType:
+      type: string
+      description: The type of the adjustment.
+      enum:
+        - AUTO_LINK_TRANSFER_IN
+        - AUTO_LINK_TRANSFER_OUT
+        - COUNT
+        - CYCLE_COUNT
+        - DAMAGE
+        - EXPIRE
+        - EXTERNAL
+        - INITIAL
+        - LOSS
+        - MISSING_DURING_TRANSFER
+        - PRODUCED_MANUALLY
+        - RECEIVE
+        - RESTOCK
+        - SAMPLED
+        - THEFT
+        - TRANSFERRED_INTERNALLY
+        - TRANSFERRED_TO_OTHER_LOCATION
+        - WASTED
+    InventoryHistoryResponse:
+      type: object
+      required:
+        - data
+      properties:
+        currentPageToken:
+          type: string
+          nullable: false
+          description: The page token the client provided to get the current page of results
+        nextPageToken:
+          type: string
+          nullable: false
+          description: The page token the client can provide to get the next page of results
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/InventoryHistoryLogEntry'
+    InventoryHistoryLogEntry:
+      type: object
+      required:
+        - inventoryHistoryLogId
+        - itemVersionId
+        - createdDate
+        - modifiedDate
+        - notes
+        - adjustmentType
+        - quantityInfo
+        - userDetails
+      properties:
+        inventoryHistoryLogId:
+          type: string
+          format: uuid
+          nullable: false
+          readOnly: true
+          description: The unique identifier of the inventory history adjustment.
+        itemVersionId:
+          type: string
+          format: uuid
+          nullable: false
+          description: The Toast ID of the adjusted item.
+        createdDate:
+          type: string
+          format: date-time
+          nullable: false
+          readOnly: true
+          description: The date and time the inventory history log entry was created.
+        modifiedDate:
+          type: string
+          format: date-time
+          nullable: false
+          readOnly: true
+          description: The date and time the inventory history log entry was last modified.
+        notes:
+          type: string
+          nullable: true
+          description: Notes that accompany the adjustment.
+        adjustmentType:
+          $ref: '#/components/schemas/InventoryHistoryAdjustmentType'
+        supplier:
+          $ref: '#/components/schemas/Supplier'
+        purchaseOrderId:
+          type: string
+          format: uuid
+          description: The unique identifier of the purchase order, for receiving adjustments.
+          nullable: true
+        quantityInfo:
+          $ref: '#/components/schemas/InventoryHistoryQuantity'
+        costInfo:
+          $ref: '#/components/schemas/InventoryHistoryCost'
+        userDetails:
+          $ref: '#/components/schemas/UserDetails'
+    InventoryHistoryQuantity:
+      type: object
+      required:
+        - quantityOnHand
+      properties:
+        quantityOnHand:
+          type: number
+          format: double
+          description: The quantity on hand after this inventory history log entry
+          nullable: false
+        quantityVariance:
+          type: number
+          format: double
+          description: The difference between the quantity on hand and the expected quantity
+          nullable: true
+    InventoryHistoryCost:
+      type: object
+      properties:
+        capturedCost:
+          type: number
+          format: double
+          description: The cost captured at the time of the adjustment
+          nullable: true
+        landedCost:
+          type: number
+          format: double
+          description: The landed cost captured at the time if the adjustment
+          nullable: true
+    UserDetails:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          nullable: true
+          description: The id of the user performing the adjustment.
+        firstName:
+          type: string
+          nullable: true
+          description: The first name of the user.
+        lastName:
+          type: string
+          nullable: true
+          description: The last name of the user.

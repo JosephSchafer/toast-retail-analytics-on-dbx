@@ -1,0 +1,35 @@
+{
+  "name": "Nightly Retail Inventory Ingestion",
+  "tasks": [
+    {
+      "task_key": "bronze_purchase_orders",
+      "description": "Ingest Toast Retail purchase orders updated yesterday",
+      "notebook_task": {
+        "notebook_path": "/Workspace/Shared/Sales & Weather Repo/1_Bronze_Ingest_Retail_PurchaseOrders",
+        "base_parameters": {"run_mode": "incremental"}
+      }
+    },
+    {
+      "task_key": "bronze_inventory_history",
+      "description": "Ingest Toast Retail inventory history events updated yesterday",
+      "notebook_task": {
+        "notebook_path": "/Workspace/Shared/Sales & Weather Repo/1_Bronze_Ingest_Retail_InventoryHistory",
+        "base_parameters": {"run_mode": "incremental"}
+      }
+    }
+  ],
+  "schedule": {
+    "quartz_cron_expression": "0 30 8 * * ?",
+    "timezone_id": "America/New_York",
+    "pause_status": "UNPAUSED"
+  },
+  "email_notifications": {
+    "on_failure": ["joe@threesistersprovisions.com"]
+  },
+  "tags": {
+    "layer": "bronze",
+    "domain": "inventory",
+    "pipeline": "retail-api"
+  },
+  "max_concurrent_runs": 1
+}
