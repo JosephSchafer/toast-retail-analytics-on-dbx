@@ -1,18 +1,16 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Gold — Sales Summary Tables (tip_fix)
-# MAGIC
-# MAGIC **Change from base version:** `net_revenue` and `avg_ticket_size` now exclude
-# MAGIC `tip_amount` from `total_amount`. Tips are only present on Online / Toast Pickup
-# MAGIC App orders and must not appear in revenue figures.
+# MAGIC # Gold — Sales Summary Tables
 # MAGIC
 # MAGIC Builds three Gold tables from Silver sales data, joined to weather and
-# MAGIC the reference item catalog:
+# MAGIC the reference item catalog. **Actuals only** — forecasts live in
+# MAGIC `gold.daily_sales_forecast` (written by `9_Forecast_Generate`).
+# MAGIC The Platinum view `platinum.daily_sales_combined` joins both for dashboards.
 # MAGIC
 # MAGIC | Table | Grain | Powers |
 # MAGIC |---|---|---|
 # MAGIC | `gold.hourly_sales_summary` | Hour × day | Today's hourly revenue + traffic strip |
-# MAGIC | `gold.daily_sales_summary` | Day × record_type | 7-day back/forward revenue + weather |
+# MAGIC | `gold.daily_sales_summary` | Day (actuals only) | 7-day back revenue + weather |
 # MAGIC | `gold.daily_sales_by_category` | Day × category | Category revenue breakdown chart |
 # MAGIC
 # MAGIC ## Run modes
@@ -23,12 +21,6 @@
 # MAGIC
 # MAGIC ## Schedule
 # MAGIC Run daily at 02:00 AM ET — after Bronze sales (midnight) and weather (01:00 AM).
-# MAGIC
-# MAGIC ## Notes on record_type
-# MAGIC `gold.daily_sales_summary` carries a `record_type` column (`actual` or `forecast`).
-# MAGIC This notebook only writes `actual` rows. The MLflow forecast notebook writes
-# MAGIC `forecast` rows to the same table. Both series live together so dashboards
-# MAGIC can plot them on the same axis by filtering on `record_type`.
 
 # COMMAND ----------
 
@@ -131,12 +123,11 @@ spark.sql(f"""
 spark.sql(f"""
     CREATE TABLE IF NOT EXISTS {DAILY_TABLE} (
         business_date           DATE        NOT NULL    COMMENT 'The business date',
-        record_type             STRING      NOT NULL    COMMENT 'actual or forecast. Actual rows written by this notebook; forecast rows written by the MLflow forecast notebook.',
 
-        -- Sales metrics (actual rows: from Silver; forecast rows: from MLflow model)
+        -- Sales metrics (actuals from Silver only)
         order_count             INTEGER                 COMMENT 'Number of orders (tickets) for the day',
         gross_revenue           DOUBLE                  COMMENT 'Total revenue before discounts',
-        net_revenue             DOUBLE                  COMMENT 'Total revenue after discounts',
+        net_revenue             DOUBLE                  COMMENT 'Total revenue after discounts, excluding tips',
         total_discounts         DOUBLE                  COMMENT 'Total discount value applied',
         avg_ticket_size         DOUBLE                  COMMENT 'Average net revenue per order',
         item_count              INTEGER                 COMMENT 'Total line items sold',
@@ -166,17 +157,11 @@ spark.sql(f"""
 
         -- Audit
         _gold_updated_at        TIMESTAMP               COMMENT 'When this row was last written to Gold',
-        _batch_id               STRING                  COMMENT 'Batch ID for this Gold run',
-
-        -- Forecast confidence bounds (written by MLflow forecast notebook)
-        -- Included in schema here so full_refresh MERGE never fails on missing columns
-        forecast_lower          DOUBLE                  COMMENT 'Lower confidence bound from forecast model',
-        forecast_upper          DOUBLE                  COMMENT 'Upper confidence bound from forecast model',
-        forecast_model          STRING                  COMMENT 'Model name that generated this forecast row'
+        _batch_id               STRING                  COMMENT 'Batch ID for this Gold run'
     )
     USING DELTA
     PARTITIONED BY (year, month)
-    COMMENT 'Gold: daily sales summary with weather. One row per day per record_type (actual/forecast). Actual rows from Silver; forecast rows from MLflow model. Powers the 7-day back + 7-day forward dashboard view with weather overlays.'
+    COMMENT 'Gold: daily sales actuals with weather. One row per business day. Actuals only — forecasts live in gold.daily_sales_forecast. Join both via platinum.daily_sales_combined.'
     TBLPROPERTIES ('quality' = 'gold', 'delta.enableChangeDataFeed' = 'true')
 """)
 
@@ -221,7 +206,6 @@ if RUN_MODE == "incremental":
         last_gold_date = spark.sql(f"""
             SELECT MAX(business_date) AS d
             FROM {DAILY_TABLE}
-            WHERE record_type = 'actual'
         """).collect()[0]["d"]
     except Exception:
         last_gold_date = None
@@ -357,7 +341,6 @@ spine_with_sales.createOrReplaceTempView("spine_with_sales")
 daily_actuals = spark.sql(f"""
     SELECT
         s.business_date,
-        'actual'                                AS record_type,
 
         -- Sales metrics — zero for closed days, actual values for open days
         COALESCE(s.order_count, 0)              AS order_count,
@@ -406,15 +389,8 @@ print(f"daily_sales_summary rows to merge: {daily_actuals.count()}")
 print(f"  Open days:   {open_count}")
 print(f"  Closed days: {closed_count} (written as zero-revenue rows)")
 
-# ── Explicit column update list ────────────────────────────────────────────────
-# Gold owns only these columns. Forecast-specific columns (forecast_lower,
-# forecast_upper, forecast_model, forecast_model_version, forecast_run_id,
-# forecast_created_at, forecast_horizon_days) are written exclusively by
-# 9_Forecast_Generate and must never be touched here.
-# Using whenMatchedUpdateAll() would break when new forecast columns are added.
-
 DAILY_UPDATE_COLS = [
-    "record_type", "order_count", "gross_revenue", "net_revenue",
+    "order_count", "gross_revenue", "net_revenue",
     "total_discounts", "avg_ticket_size", "item_count",
     "day_of_week", "day_name", "is_weekend", "is_bread_delivery_day",
     "week_of_year", "month", "year",
@@ -425,26 +401,12 @@ DAILY_UPDATE_COLS = [
     "_gold_updated_at", "_batch_id",
 ]
 
-# Insert set: Gold-owned columns from source + NULLs for forecast columns
-# Forecast columns are populated exclusively by 9_Forecast_Generate
-DAILY_INSERT_SET = {col: f"s.{col}" for col in ["business_date"] + DAILY_UPDATE_COLS}
-DAILY_INSERT_SET.update({
-    "forecast_lower":         "CAST(NULL AS DOUBLE)",
-    "forecast_upper":         "CAST(NULL AS DOUBLE)",
-    "forecast_model":         "CAST(NULL AS STRING)",
-    "forecast_model_version": "CAST(NULL AS INTEGER)",
-    "forecast_run_id":        "CAST(NULL AS STRING)",
-    "forecast_created_at":    "CAST(NULL AS TIMESTAMP)",
-    "forecast_horizon_days":  "CAST(NULL AS INTEGER)",
-})
-
 DeltaTable.forName(spark, DAILY_TABLE).alias("t").merge(
     daily_actuals.alias("s"),
-    "t.business_date = s.business_date AND t.record_type = s.record_type"
+    "t.business_date = s.business_date"
 ).whenMatchedUpdate(
     set={col: f"s.{col}" for col in DAILY_UPDATE_COLS}
-).whenNotMatchedInsert(
-    values=DAILY_INSERT_SET
+).whenNotMatchedInsertAll(
 ).execute()
 
 print(f"✓ Merged into {DAILY_TABLE}")
@@ -713,7 +675,7 @@ for table, description, tags in [
      "Gold: hourly sales summary for the Cohasset store. One row per hour per business day. Covers store hours (9am-7pm) plus any hours with transactions outside that window. Joined to hourly weather from Open-Meteo. Powers the hourly revenue and ticket count strip on the dashboard.",
      {'domain':'retail','layer':'gold','refresh':'daily','pii':'false','dashboard':'hourly_strip'}),
     (DAILY_TABLE,
-     "Gold: daily sales summary with weather. One row per business date per record_type (actual or forecast). Actual rows from Silver orders; forecast rows written by the MLflow forecast notebook. Weather joined from Open-Meteo. Powers the 7-day back and 7-day forward dashboard view.",
+     "Gold: daily sales actuals with weather. One row per business date. Actuals only — forecasts live in gold.daily_sales_forecast. Join both via platinum.daily_sales_combined for dashboards.",
      {'domain':'retail','layer':'gold','refresh':'daily','pii':'false','dashboard':'7day_view'}),
     (CATEGORY_TABLE,
      "Gold: daily sales broken down by category group and category. One row per date + category. Actuals only. Joins Silver order items to the reference item catalog for category names. Powers the category revenue breakdown chart on the dashboard.",
@@ -775,8 +737,7 @@ gold_actuals = spark.sql(f"""
         ROUND(net_revenue, 2)           AS gold_revenue,
         ROUND(avg_ticket_size, 2)       AS gold_avg_ticket
     FROM {DAILY_TABLE}
-    WHERE record_type = 'actual'
-      AND business_date BETWEEN '{process_from}' AND '{yesterday}'
+    WHERE business_date BETWEEN '{process_from}' AND '{yesterday}'
 """).toPandas()
 
 gold_actuals['business_date']  = gold_actuals['business_date'].astype(str)
@@ -891,8 +852,7 @@ else:
 future_actuals = spark.sql(f"""
     SELECT COUNT(*) AS cnt
     FROM {DAILY_TABLE}
-    WHERE record_type = 'actual'
-      AND business_date > '{yesterday}'
+    WHERE business_date > '{yesterday}'
 """).collect()[0]['cnt']
 
 print(f"\n[5] No future actual rows")
@@ -963,7 +923,6 @@ spark.sql(f"""
     SELECT
         business_date,
         day_name,
-        record_type,
         order_count,
         ROUND(net_revenue, 2)           AS net_revenue,
         ROUND(avg_ticket_size, 2)       AS avg_ticket,
@@ -972,7 +931,6 @@ spark.sql(f"""
         is_bread_delivery_day
     FROM {DAILY_TABLE}
     WHERE business_date >= CURRENT_DATE - INTERVAL 7 DAYS
-      AND record_type = 'actual'
     ORDER BY business_date DESC
 """).show(truncate=False)
 
@@ -1005,8 +963,7 @@ spark.sql(f"""
             / NULLIF(LAG(net_revenue, 7) OVER (ORDER BY business_date), 0) * 100
         , 1)                            AS wow_pct_change
     FROM {DAILY_TABLE}
-    WHERE record_type = 'actual'
-      AND business_date >= CURRENT_DATE - INTERVAL 14 DAYS
+    WHERE business_date >= CURRENT_DATE - INTERVAL 14 DAYS
     ORDER BY business_date DESC
     LIMIT 14
 """).show(truncate=False)
