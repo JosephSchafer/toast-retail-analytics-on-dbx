@@ -379,10 +379,13 @@ forecast_final = combined_spark \
     .join(weather_fwd, combined_spark.business_date == weather_fwd.date, how="left") \
     .drop("date")
 
-# MERGE on business_date — updates today's forecast run, preserves history
+# MERGE on (business_date, forecast_created_at::date) — one row per target date per
+# forecast run. Each nightly run inserts 30 new rows rather than overwriting.
+# This preserves the full forecast history needed for accuracy-by-age analysis
+# in platinum.forecast_accuracy. ~11k rows/year — negligible storage.
 DeltaTable.forName(spark, FORECAST_TABLE).alias("t").merge(
     forecast_final.alias("s"),
-    "t.business_date = s.business_date"
+    "t.business_date = s.business_date AND CAST(t.forecast_created_at AS DATE) = CAST(s.forecast_created_at AS DATE)"
 ).whenMatchedUpdateAll(
 ).whenNotMatchedInsertAll(
 ).execute()
