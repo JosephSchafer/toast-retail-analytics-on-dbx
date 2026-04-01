@@ -20,17 +20,26 @@ TOAST_CLIENT_ID       = dbutils.secrets.get(scope="toast_api", key="toast_client
 TOAST_CLIENT_SECRET   = dbutils.secrets.get(scope="toast_api", key="toast_client_secret")
 TOAST_RESTAURANT_GUID = dbutils.secrets.get(scope="toast_api", key="restaurant_guid")
 
-TOAST_AUTH_URL     = "https://ws.toasttab.com/authentication/v1/authentication/login"
+TOAST_AUTH_URL          = "https://ws.toasttab.com/authentication/v1/authentication/login"
+TOAST_SANDBOX_AUTH_URL  = "https://ws-sandbox-api.eng.toasttab.com/authentication/v1/authentication/login"
 
-# Endpoint variants to try — Toast has changed paths across API versions
+# Production host variants
+PROD_HOST    = "https://ws.toasttab.com"
+# Sandbox host (from Toast sample code — retail API may live here even for prod credentials)
+SANDBOX_HOST = "https://ws-sandbox-api.eng.toasttab.com"
+
+# Endpoint variants to try across both hosts
 INVENTORY_ENDPOINTS = [
-    "https://ws.toasttab.com/v1/inventoryHistory/search",
-    "https://ws.toasttab.com/retail/v1/inventoryHistory/search",
-    "https://ws.toasttab.com/rsync/v1/inventoryHistory/search",
+    f"{PROD_HOST}/v1/inventoryHistory/search",
+    f"{SANDBOX_HOST}/v1/inventoryHistory/search",
+    f"{PROD_HOST}/retail/v1/inventoryHistory/search",
+    f"{SANDBOX_HOST}/retail/v1/inventoryHistory/search",
 ]
 PO_ENDPOINTS = [
-    "https://ws.toasttab.com/v1/purchaseOrders/search",
-    "https://ws.toasttab.com/retail/v1/purchaseOrders/search",
+    f"{PROD_HOST}/v1/purchaseOrders/search",
+    f"{SANDBOX_HOST}/v1/purchaseOrders/search",
+    f"{PROD_HOST}/retail/v1/purchaseOrders/search",
+    f"{SANDBOX_HOST}/retail/v1/purchaseOrders/search",
 ]
 
 yesterday = (datetime.date.today() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
@@ -227,26 +236,76 @@ print(f"Body:   {resp.text[:500]}")
 
 # COMMAND ----------
 
-# MAGIC %md ## Test 7 — GET instead of POST on inventory history
+# MAGIC %md ## Test 7 — GET by ID (exact pattern from Toast sample code)
 
 # COMMAND ----------
 
-print("\n── TEST 7: GET request on inventory history ───────────────────────────")
-print("(Testing if endpoint expects GET with query params instead of POST)")
+print("\n── TEST 7: GET by ID — exact Toast sample code pattern ────────────────")
+print("Toast sample uses: GET /v1/inventoryHistory/{id}")
+print("A 404 = endpoint reachable but ID not found (good — means we have access)")
+print("A 401/403 = permission denied (scope issue confirmed)")
+print("A 200 = unexpected hit on dummy ID\n")
 
-url = INVENTORY_ENDPOINTS[0].replace("/search", "")
-print(f"URL: {url}")
-resp = requests.get(
-    url,
-    headers={
-        "Authorization":                f"Bearer {TOKEN}",
-        "Toast-Restaurant-External-ID": TOAST_RESTAURANT_GUID,
+dummy_id = "00000000-0000-0000-0000-000000000000"
+
+for host in [PROD_HOST, SANDBOX_HOST]:
+    url = f"{host}/v1/inventoryHistory/{dummy_id}"
+    print(f"Trying: {url}")
+    try:
+        resp = requests.get(
+            url,
+            headers={
+                "Authorization":                f"Bearer {TOKEN}",
+                "Toast-Restaurant-External-ID": TOAST_RESTAURANT_GUID,
+            },
+            timeout=30
+        )
+        print(f"  Status: {resp.status_code}")
+        print(f"  Body:   {resp.text[:300]}")
+        if resp.status_code == 404:
+            print(f"  ✅  404 = endpoint exists and you have access — dummy ID just not found")
+        elif resp.status_code in (401, 403):
+            print(f"  ❌  {resp.status_code} = permission denied on this host")
+    except Exception as e:
+        print(f"  ERROR: {e}")
+
+# COMMAND ----------
+
+# MAGIC %md ## Test 7b — Auth against sandbox host
+
+# COMMAND ----------
+
+print("\n── TEST 7b: Authenticate directly against sandbox host ────────────────")
+print("(Checking if the retail API requires its own auth endpoint)")
+
+sandbox_auth_resp = requests.post(
+    TOAST_SANDBOX_AUTH_URL,
+    json={
+        "clientId":       TOAST_CLIENT_ID,
+        "clientSecret":   TOAST_CLIENT_SECRET,
+        "userAccessType": "TOAST_MACHINE_CLIENT"
     },
-    params={"startDate": yesterday, "endDate": today},
+    headers={"Content-Type": "application/json"},
     timeout=30
 )
-print(f"Status: {resp.status_code}")
-print(f"Body:   {resp.text[:500]}")
+print(f"Status: {sandbox_auth_resp.status_code}")
+print(f"Body:   {sandbox_auth_resp.text[:500]}")
+
+if sandbox_auth_resp.status_code == 200:
+    SANDBOX_TOKEN = sandbox_auth_resp.json()["token"]["accessToken"]
+    print("\n✅  Sandbox auth succeeded — testing inventory endpoint with sandbox token")
+    resp = requests.get(
+        f"{SANDBOX_HOST}/v1/inventoryHistory/{dummy_id}",
+        headers={
+            "Authorization":                f"Bearer {SANDBOX_TOKEN}",
+            "Toast-Restaurant-External-ID": TOAST_RESTAURANT_GUID,
+        },
+        timeout=30
+    )
+    print(f"  Inventory GET status: {resp.status_code}")
+    print(f"  Body: {resp.text[:300]}")
+else:
+    print("  Sandbox auth failed — credentials may be production-only")
 
 # COMMAND ----------
 
@@ -304,7 +363,15 @@ print("WHAT TO SHARE WITH TOAST SUPPORT:")
 print("  1. The full output of this notebook")
 print(f"  2. Client ID prefix: {TOAST_CLIENT_ID[:8]}...")
 print(f"  3. Restaurant GUID: {TOAST_RESTAURANT_GUID}")
-print("  4. The JWT claims from Test 2 (especially the 'scope' field)")
-print("  5. HTTP status codes and response bodies from Tests 3-5")
-print("  6. Whether Test 8 (Orders API) passed — confirms which layer is failing")
+print("  4. The JWT claims from Test 2 — especially the 'scope' field")
+print("     If 'retail.inventory:read' is missing, the PM needs to enable it")
+print("  5. HTTP status codes from Tests 3 & 4 (all endpoint variants)")
+print("  6. Test 7 result — 404 means access granted, 401/403 means scope missing")
+print("  7. Test 7b — whether sandbox auth works (indicates if host matters)")
+print("  8. Test 8 — whether Orders API passes (isolates scope vs credential issue)")
+print()
+print("KEY QUESTION FOR TOAST PM:")
+print("  The Toast sample code uses host: ws-sandbox-api.eng.toasttab.com")
+print("  Does the retail API require a different host than ws.toasttab.com?")
+print("  And does client ID starting with '6Nmo' have retail.inventory:read enabled?")
 print("=" * 70)
