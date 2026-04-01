@@ -16,3 +16,10 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"branch": "master"}' \
           && echo "✅ Databricks Repo synced to master"
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "Databricks sync failed for commit ${{ github.sha }}"
+          echo "Pushed by: ${{ github.actor }}"
+          echo "See: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
