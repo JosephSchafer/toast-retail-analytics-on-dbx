@@ -14,7 +14,7 @@ import requests
 import datetime
 
 TOAST_AUTH_URL     = "https://ws.toasttab.com/authentication/v1/authentication/login"
-TOAST_INV_HIST_URL = "https://ws.toasttab.com/v1/inventoryHistory/search"
+TOAST_INV_HIST_URL = "https://ws.toasttab.com/retail/v1/inventoryHistory/search"
 
 TOAST_CLIENT_ID       = dbutils.secrets.get(scope="toast_api", key="toast_client_id")
 TOAST_CLIENT_SECRET   = dbutils.secrets.get(scope="toast_api", key="toast_client_secret")

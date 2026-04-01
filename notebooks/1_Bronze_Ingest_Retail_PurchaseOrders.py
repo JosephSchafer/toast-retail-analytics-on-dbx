@@ -62,7 +62,7 @@ BACKFILL_START_RAW = dbutils.widgets.get("backfill_start_date")
 BACKFILL_END_RAW   = dbutils.widgets.get("backfill_end_date")
 
 TOAST_AUTH_URL = "https://ws.toasttab.com/authentication/v1/authentication/login"
-TOAST_PO_URL   = "https://ws.toasttab.com/v1/purchaseOrders/search"
+TOAST_PO_URL   = "https://ws.toasttab.com/retail/v1/purchaseOrders/search"
 
 CATALOG         = "3sp_analytics_workspace"
 FULL_TABLE_NAME = f"{CATALOG}.bronze.toast_purchase_orders_raw"
