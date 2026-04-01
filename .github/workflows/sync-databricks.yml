@@ -1,0 +1,18 @@
+name: Sync to Databricks
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pull latest commits into Databricks Repo
+        run: |
+          curl -sf -X PATCH \
+            "${{ secrets.DATABRICKS_HOST }}/api/2.0/repos/1826259645163187" \
+            -H "Authorization: Bearer ${{ secrets.DATABRICKS_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"branch": "master"}' \
+          && echo "✅ Databricks Repo synced to master"
