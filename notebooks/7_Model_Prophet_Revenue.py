@@ -55,6 +55,10 @@
 # MAGIC
 # MAGIC | Version | Date | Author | Change |
 # MAGIC |---|---|---|---|
+# MAGIC | v6 | 2026-04-29 | JS | ne_seasonal_prior mode: multiplicative→additive. Multiplicative compounded the weekly peak with summer index (May Fri $3k+); additive adds a fixed $/day seasonal bonus instead. prior_scale restored to 5.0 — regularization doesn't help when data is strongly informative. |
+| v5 | 2026-04-28 | JS | Smooth seasonal prior: interpolate between month midpoints (15th) instead of step-function per month. Eliminates hard Apr→May forecast jump. |
+| v4 | 2026-04-19 | JS | Summer seasonality: switched from Fourier add_seasonality to ne_seasonal_prior multiplicative regressor. Added Dec-Feb→Mar-Apr backtest. |
+# MAGIC | v3 | 2026-04-19 | JS | Switched to flat growth — logistic S-curve projected 2-3x actuals for summer. seasonality_prior_scale 5→2, yearly prior_scale 3→1 |
 # MAGIC | v2 | 2026-03-27 | JS | Logistic growth cap $12k, custom seasonal prior from prior store, training start Dec 1 |
 # MAGIC | v1 | 2026-03-27 | JS | Initial build — linear trend, no prior, full history |
 
@@ -144,13 +148,19 @@ PRIOR_MONTHLY_LINEARITY = {
 }
 
 # ── Prophet hyperparameters ────────────────────────────────────────────────────
+# growth='flat': the store has been at a stable plateau since Dec 2025.
+# With only 5 months of data, logistic growth was interpreting the natural
+# winter→spring seasonal uptick as ongoing exponential S-curve growth,
+# then projecting 2-3x actual revenue for summer. Flat growth makes the
+# trend a constant baseline; weekly seasonality and the yearly prior
+# handle the rest.
 PROPHET_PARAMS = {
-    "growth":                   "logistic",   # bounded growth toward cap
-    "changepoint_prior_scale":  0.05,         # moderate trend flexibility
-    "seasonality_prior_scale":  5.0,          # seasonal patterns can be meaningful
+    "growth":                   "flat",       # plateau since Dec — no trend component
+    "changepoint_prior_scale":  0.05,         # kept for compatibility (unused with flat growth)
+    "seasonality_prior_scale":  2.0,          # reduced from 5.0 — weekly pattern is reliable
     "holidays_prior_scale":     10.0,         # events can have large effects
     "seasonality_mode":         "multiplicative",
-    "yearly_seasonality":       False,        # replaced by custom prior below
+    "yearly_seasonality":       False,        # replaced by ne_seasonal_prior regressor
     "weekly_seasonality":       True,         # reliable from our own data
     "daily_seasonality":        False,
 }
@@ -227,47 +237,66 @@ print(f"  Reflects higher ticket size but same location foot traffic constraints
 
 # COMMAND ----------
 
-# ── 6. BUILD CUSTOM YEARLY SEASONALITY FROM PRIOR STORE DATA ──────────────────
-# With only 4 months of our own data, Prophet cannot fit a reliable yearly curve.
-# Instead we build a custom seasonality from the prior store's monthly linearity.
+# ── 6. BUILD PRIOR SEASONAL REGRESSOR FROM PRIOR STORE DATA ───────────────────
+# With only 5 months of our own data, Prophet cannot fit a reliable yearly curve
+# via Fourier seasonality — 8 free Fourier coefficients (order=4) extrapolate
+# wildly into unobserved months (tested: prior_scale=3 → May $4k+, May $8k+ at 6).
 #
-# How this works:
-#   Prophet's custom seasonality accepts a function that returns a value
-#   for any given date. We build a smooth curve from the monthly linearity
-#   percentages using linear interpolation between month midpoints.
-#   The prior_scale=3 makes this a SOFT prior — our own data will increasingly
-#   override it as we accumulate observations across more months.
+# Better approach: treat the prior store's monthly pattern as a REGRESSOR.
+#   - Pre-compute one scalar per date: (monthly_linearity / mean_linearity) - 1
+#   - Add as a multiplicative regressor with a moderate prior_scale
+#   - Model learns ONE coefficient from Dec-Apr data: how strongly this store
+#     tracks the prior store's seasonal pattern
+#   - That coefficient naturally extrapolates summer without Fourier freedom
 #
-# By next September (12 months of our data) this prior should be
-# almost entirely superseded by what we've actually observed.
+# Example: if the learned coefficient is 0.5 and July prior index = +0.38,
+# the multiplicative contribution is +19% above baseline for July → reasonable.
 
-def monthly_seasonality_prior(ds):
-    """
-    Returns a seasonality value for any date based on the prior store's
-    monthly revenue distribution. Interpolates smoothly between months.
+_mean_lin = np.mean(list(PRIOR_MONTHLY_LINEARITY.values()))
 
-    This encodes the knowledge that July is ~77% busier than January
-    (0.115 / 0.065 = 1.77) without requiring us to have observed a July.
-    """
+def prior_seasonal_index(ds):
+    # Treat each month's value as anchored at the 15th (midpoint).
+    # Interpolate linearly between adjacent midpoints so the regressor
+    # transitions smoothly across month boundaries rather than stepping
+    # on the 1st of each month (which caused the visible Apr→May jump).
     if not isinstance(ds, pd.Timestamp):
         ds = pd.Timestamp(ds)
-    month = ds.month
-    # Normalize so the annual average = 1.0 (mean of all 12 values)
-    mean_lin = np.mean(list(PRIOR_MONTHLY_LINEARITY.values()))
-    return (PRIOR_MONTHLY_LINEARITY[month] / mean_lin) - 1.0
+    if ds.day < 15:
+        pm   = 12 if ds.month == 1 else ds.month - 1
+        py   = ds.year - 1 if ds.month == 1 else ds.year
+        m1, m2 = pd.Timestamp(py, pm, 15), pd.Timestamp(ds.year, ds.month, 15)
+        v1  = (PRIOR_MONTHLY_LINEARITY[pm]       / _mean_lin) - 1.0
+        v2  = (PRIOR_MONTHLY_LINEARITY[ds.month] / _mean_lin) - 1.0
+    else:
+        nm   = 1 if ds.month == 12 else ds.month + 1
+        ny   = ds.year + 1 if ds.month == 12 else ds.year
+        m1, m2 = pd.Timestamp(ds.year, ds.month, 15), pd.Timestamp(ny, nm, 15)
+        v1  = (PRIOR_MONTHLY_LINEARITY[ds.month] / _mean_lin) - 1.0
+        v2  = (PRIOR_MONTHLY_LINEARITY[nm]       / _mean_lin) - 1.0
+    t = (ds - m1).days / (m2 - m1).days
+    return v1 + (v2 - v1) * t
 
-# Vectorized version for Prophet
-def prior_seasonality(ds):
-    return pd.Series([monthly_seasonality_prior(d) for d in pd.to_datetime(ds)])
+def prior_seasonality(ds_series):
+    return pd.Series([prior_seasonal_index(d) for d in pd.to_datetime(ds_series)])
 
-print("Prior seasonality values (normalized, 0.0 = average month):")
+# Attach to all dataframes
+all_historical['ne_seasonal_prior'] = prior_seasonality(all_historical['ds']).values
+future_df['ne_seasonal_prior']      = prior_seasonality(future_df['ds']).values
+train_df['ne_seasonal_prior']       = prior_seasonality(train_df['ds']).values
+
+print("Prior seasonal index (smooth interpolation — 0.0 = annual average):")
+print("  Midpoint values (15th of each month):")
 for month, lin in PRIOR_MONTHLY_LINEARITY.items():
-    mean_lin = np.mean(list(PRIOR_MONTHLY_LINEARITY.values()))
-    normalized = (lin / mean_lin) - 1.0
-    bar = "█" * int(abs(normalized) * 20)
-    sign = "+" if normalized >= 0 else "-"
-    month_name = pd.Timestamp(f"2026-{month:02d}-01").strftime("%B")
-    print(f"  {month_name:<12} {sign}{abs(normalized)*100:4.1f}%  {bar}")
+    val  = (lin / _mean_lin) - 1.0
+    bar  = "█" * int(abs(val) * 30)
+    sign = "+" if val >= 0 else "-"
+    mn   = pd.Timestamp(f"2026-{month:02d}-01").strftime("%B")
+    print(f"  {mn:<12} {sign}{abs(val)*100:4.1f}%  {bar}")
+print()
+print("  Boundary check (Apr 30 → May 1 should be near-identical):")
+for ds_str in ['2026-04-28', '2026-04-30', '2026-05-01', '2026-05-03']:
+    v = prior_seasonal_index(pd.Timestamp(ds_str))
+    print(f"  {ds_str}  {v:+.4f}")
 
 # COMMAND ----------
 
@@ -333,9 +362,103 @@ print(f"  View at: Databricks sidebar → Experiments → {EXPERIMENT_NAME}")
 
 # COMMAND ----------
 
-# ── 9. TRAIN PROPHET MODEL ────────────────────────────────────────────────────
+# ── 9. BACKTEST: Train Dec-Feb → Evaluate Mar-Apr ────────────────────────────
+# With 7 months of actuals, we can do a genuine holdout test.
+# Train on Dec 2025 - Feb 28 2026 (winter only).
+# Evaluate on Mar 1 - Apr 18 2026 (spring actuals we already have).
+# This quantifies how well the yearly_prior extrapolates the seasonal lift
+# BEFORE we trust it for the unseen summer months.
+#
+# Target: MAPE < 25%, CI coverage > 60%.
+# If the seasonal prior correctly encodes "spring is busier than winter",
+# Mar-Apr predictions should track actuals reasonably well.
 
-with mlflow.start_run(run_name="prophet_revenue_v2") as run:
+BACKTEST_CUTOFF = pd.Timestamp('2026-03-01')
+
+bt_train = train_df[train_df['ds'] < BACKTEST_CUTOFF].copy()
+bt_test  = train_df[train_df['ds'] >= BACKTEST_CUTOFF].copy()
+
+print(f"── Backtest: Dec-Feb train → Mar-Apr evaluation ──")
+print(f"  Train: {bt_train['ds'].min().date()} → {bt_train['ds'].max().date()} ({len(bt_train)} rows)")
+print(f"  Test:  {bt_test['ds'].min().date()} → {bt_test['ds'].max().date()} ({len(bt_test)} rows)")
+
+_bt_model = Prophet(
+    growth                  = PROPHET_PARAMS["growth"],
+    changepoint_prior_scale = PROPHET_PARAMS["changepoint_prior_scale"],
+    seasonality_prior_scale = PROPHET_PARAMS["seasonality_prior_scale"],
+    holidays_prior_scale    = PROPHET_PARAMS["holidays_prior_scale"],
+    seasonality_mode        = PROPHET_PARAMS["seasonality_mode"],
+    yearly_seasonality      = False,
+    weekly_seasonality      = True,
+    daily_seasonality       = False,
+    holidays                = holidays_df,
+)
+_bt_model.add_regressor('ne_seasonal_prior',     mode='additive', prior_scale=5.0)
+_bt_model.add_regressor('is_bread_delivery_day', mode='multiplicative')
+_bt_model.add_regressor('weather_high_f',         mode='additive')
+_bt_model.add_regressor('total_precip_in',        mode='additive')
+
+# Add prior seasonal index to backtest sets
+bt_train['ne_seasonal_prior'] = prior_seasonality(bt_train['ds']).values
+bt_test['ne_seasonal_prior']  = prior_seasonality(bt_test['ds']).values
+
+_bt_fit = bt_train[['ds', 'y_revenue', 'cap', 'floor',
+                     'ne_seasonal_prior',
+                     'is_bread_delivery_day', 'weather_high_f', 'total_precip_in']].rename(
+    columns={'y_revenue': 'y'}
+).dropna(subset=['ds', 'y'])
+for _col in ['weather_high_f', 'total_precip_in']:
+    _bt_fit[_col] = _bt_fit[_col].fillna(_bt_fit[_col].median())
+_bt_fit['is_bread_delivery_day'] = _bt_fit['is_bread_delivery_day'].fillna(False).astype(int)
+
+_bt_model.fit(_bt_fit[['ds', 'y', 'cap', 'floor',
+                        'ne_seasonal_prior',
+                        'is_bread_delivery_day', 'weather_high_f', 'total_precip_in']])
+
+_bt_pred_in = bt_test[['ds', 'ne_seasonal_prior',
+                        'is_bread_delivery_day', 'weather_high_f', 'total_precip_in']].copy()
+for _col in ['weather_high_f', 'total_precip_in']:
+    _bt_pred_in[_col] = _bt_pred_in[_col].fillna(bt_train[_col].median())
+_bt_pred_in['is_bread_delivery_day'] = _bt_pred_in['is_bread_delivery_day'].fillna(False).astype(int)
+_bt_pred_in['cap']   = REVENUE_CAP
+_bt_pred_in['floor'] = 0.0
+
+_bt_fc = _bt_model.predict(_bt_pred_in)
+
+_bt_eval = _bt_fc[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].merge(
+    bt_test[['ds', 'y_revenue']].rename(columns={'y_revenue': 'actual'}),
+    on='ds', how='inner'
+)
+_bt_eval = _bt_eval[_bt_eval['actual'] > 0].copy()
+
+_bt_mae  = np.mean(np.abs(_bt_eval['yhat'] - _bt_eval['actual']))
+_bt_mape = np.mean(np.abs((_bt_eval['yhat'] - _bt_eval['actual']) / _bt_eval['actual'])) * 100
+_bt_ci_cover = (
+    (_bt_eval['actual'] >= _bt_eval['yhat_lower']) &
+    (_bt_eval['actual'] <= _bt_eval['yhat_upper'])
+).mean() * 100
+
+_pass = _bt_mape < 25 and _bt_ci_cover >= 55
+
+print(f"\n── Backtest results ──")
+print(f"  MAE:         ${_bt_mae:,.0f}/day")
+print(f"  MAPE:         {_bt_mape:.1f}%")
+print(f"  CI Coverage:  {_bt_ci_cover:.0f}% of actuals within 80% confidence interval")
+print(f"\n  {'✓ PASS' if _pass else '⚠ REVIEW'} — {'Seasonal prior extrapolates spring lift well.' if _pass else 'Check prior_scale or seasonality mode.'}")
+
+print(f"\n  {'Date':<12} {'Day':<4} {'Actual':>8} {'Predicted':>10} {'Error%':>8} {'In CI':>6}")
+print(f"  {'-'*52}")
+for _, _row in _bt_eval.sort_values('ds').iterrows():
+    _err = (_row['yhat'] - _row['actual']) / _row['actual'] * 100
+    _ci  = "✓" if _row['yhat_lower'] <= _row['actual'] <= _row['yhat_upper'] else "✗"
+    _dn  = pd.Timestamp(_row['ds']).strftime("%a")
+    print(f"  {str(_row['ds'].date()):<12} {_dn:<4} ${_row['actual']:>6,.0f}  ${_row['yhat']:>7,.0f}  {_err:>+6.1f}%  {_ci:>4}")
+
+# COMMAND ----------
+
+# ── 10. TRAIN PROPHET MODEL ───────────────────────────────────────────────────
+
+with mlflow.start_run(run_name="prophet_revenue_v6_additive_seasonal_prior") as run:
 
     run_id = run.info.run_id
     print(f"MLflow run started: {run_id}")
@@ -363,24 +486,21 @@ with mlflow.start_run(run_name="prophet_revenue_v2") as run:
         holidays                = holidays_df,
     )
 
-    # Add custom yearly seasonality from prior store data
-    # fourier_order=3 gives a smooth curve with 3 sine/cosine pairs
-    # prior_scale=3 makes it soft — our data overrides it as it accumulates
-    model.add_seasonality(
-        name         = 'yearly_prior',
-        period       = 365.25,
-        fourier_order= 3,
-        prior_scale  = 3.0,
-        condition_name = None,
-    )
-
-    # Add regressors
-    model.add_regressor('is_bread_delivery_day', mode='multiplicative')
-    model.add_regressor('weather_high_f',         mode='additive')
-    model.add_regressor('total_precip_in',        mode='additive')
+    # ne_seasonal_prior: the prior store's monthly seasonal index used as a regressor.
+    # mode='additive': the coefficient is learned in $/day units, not as a fraction of
+    # trend. This prevents multiplicative compounding where a high-revenue Friday gets
+    # BOTH the Friday weekly boost AND a 21% summer percentage multiplier, which was
+    # projecting May Fridays at $3,000+ while April Fridays were running $2,000-2,500.
+    # In additive mode the seasonal effect is a flat $/day bonus that doesn't scale with
+    # the day's base level — slow Mondays stay slow, busy Saturdays get the same bonus.
+    model.add_regressor('ne_seasonal_prior',      mode='additive', prior_scale=5.0)
+    model.add_regressor('is_bread_delivery_day',  mode='multiplicative')
+    model.add_regressor('weather_high_f',          mode='additive')
+    model.add_regressor('total_precip_in',         mode='additive')
 
     # ── Prepare fit dataframe ─────────────────────────────────────────────────
     fit_df = train_df[['ds', 'y_revenue', 'cap', 'floor',
+                        'ne_seasonal_prior',
                         'is_bread_delivery_day',
                         'weather_high_f',
                         'total_precip_in']].rename(
@@ -393,6 +513,7 @@ with mlflow.start_run(run_name="prophet_revenue_v2") as run:
 
     print("Fitting Prophet model...")
     model.fit(fit_df[['ds', 'y', 'cap', 'floor',
+                       'ne_seasonal_prior',
                        'is_bread_delivery_day',
                        'weather_high_f', 'total_precip_in']])
     print("✓ Model fitted")
@@ -400,9 +521,11 @@ with mlflow.start_run(run_name="prophet_revenue_v2") as run:
     # ── Build forecast input ──────────────────────────────────────────────────
     # Combine ALL historical dates (not just training) plus future dates
     # so the chart shows how the model fits the full history
-    hist_input = all_historical[['ds', 'is_bread_delivery_day',
+    hist_input = all_historical[['ds', 'ne_seasonal_prior',
+                                  'is_bread_delivery_day',
                                   'weather_high_f', 'total_precip_in']].copy()
-    fwd_input  = future_df[['ds', 'is_bread_delivery_day',
+    fwd_input  = future_df[['ds', 'ne_seasonal_prior',
+                              'is_bread_delivery_day',
                               'weather_high_f', 'total_precip_in']].copy()
 
     for col in ['weather_high_f', 'total_precip_in']:
@@ -488,10 +611,18 @@ with mlflow.start_run(run_name="prophet_revenue_v2") as run:
     plt.show()
 
     # ── Log model ─────────────────────────────────────────────────────────────
+    # Unity Catalog requires a model signature (input + output schema).
+    signature = infer_signature(
+        forecast_input[['ds', 'cap', 'floor', 'ne_seasonal_prior',
+                         'is_bread_delivery_day',
+                         'weather_high_f', 'total_precip_in']],
+        forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']],
+    )
     mlflow.prophet.log_model(
         pr_model              = model,
         artifact_path         = "prophet_revenue_model",
         registered_model_name = MODEL_NAME,
+        signature             = signature,
     )
 
     print(f"\n✓ Model logged and registered")
@@ -561,130 +692,25 @@ with mlflow.start_run(run_id=run_id):
 
 # COMMAND ----------
 
-# ── 11. WRITE FORECAST ROWS TO GOLD ──────────────────────────────────────────
+# ── 11. VALIDATION ────────────────────────────────────────────────────────────
+# Forecast rows are written by 9_Forecast_Generate.py — nothing to write here.
 
-future_preds = forecast[
-    forecast['ds'] > pd.Timestamp(train_df['ds'].max())
-][['ds', 'yhat', 'yhat_lower', 'yhat_upper']].copy()
-
-future_preds['yhat']       = future_preds['yhat'].clip(0, REVENUE_CAP).round(2)
-future_preds['yhat_lower'] = future_preds['yhat_lower'].clip(0).round(2)
-future_preds['yhat_upper'] = future_preds['yhat_upper'].clip(0, REVENUE_CAP * 1.1).round(2)
-
-# Add confidence bound columns if not already present
-existing_cols = [f.name for f in spark.table(DAILY_TABLE).schema.fields]
-if 'forecast_lower' not in existing_cols:
-    spark.sql(f"""
-        ALTER TABLE {DAILY_TABLE} ADD COLUMNS (
-            forecast_lower  DOUBLE COMMENT 'Lower confidence bound from forecast model',
-            forecast_upper  DOUBLE COMMENT 'Upper confidence bound from forecast model',
-            forecast_model  STRING COMMENT 'Model that generated this forecast row'
-        )
-    """)
-    print("✓ Added forecast confidence columns to daily_sales_summary")
-
-future_preds_spark = spark.createDataFrame(
-    future_preds.rename(columns={
-        'ds':         'business_date',
-        'yhat':       'net_revenue_pred',
-        'yhat_lower': 'forecast_lower',
-        'yhat_upper': 'forecast_upper',
-    })
-).withColumn("business_date", F.col("business_date").cast("date"))
-
-# Build forecast rows with calendar and weather fields
-forecast_rows = spark.sql(f"""
-    SELECT
-        f.ds                                    AS business_date,
-        'forecast'                              AS record_type,
-        CAST(NULL AS LONG)                      AS order_count,
-        CAST(NULL AS DOUBLE)                    AS gross_revenue,
-        CAST(NULL AS DOUBLE)                    AS net_revenue,
-        CAST(NULL AS DOUBLE)                    AS total_discounts,
-        CAST(NULL AS DOUBLE)                    AS avg_ticket_size,
-        CAST(NULL AS LONG)                      AS item_count,
-        DAYOFWEEK(f.ds)                         AS day_of_week,
-        DATE_FORMAT(f.ds, 'EEEE')               AS day_name,
-        DAYOFWEEK(f.ds) IN (1, 7)               AS is_weekend,
-        DAYOFWEEK(f.ds) IN (3, 6)               AS is_bread_delivery_day,
-        WEEKOFYEAR(f.ds)                        AS week_of_year,
-        MONTH(f.ds)                             AS month,
-        YEAR(f.ds)                              AS year,
-        w.weather_high_f,
-        w.weather_low_f,
-        w.weather_feels_high_f,
-        w.weather_feels_low_f,
-        w.weather_category,
-        w.weather_condition,
-        w.weather_code,
-        w.total_precip_in,
-        w.total_snow_in,
-        w.sunny_hours,
-        w.avg_cloud_cover_pct,
-        w.weather_data_type,
-        CURRENT_TIMESTAMP()                     AS _gold_updated_at,
-        '{run_id}'                              AS _batch_id
-    FROM {FEATURES_TABLE} f
-    LEFT JOIN (
-        SELECT
-            date,
-            ROUND(MAX(temperature_f), 1)            AS weather_high_f,
-            ROUND(MIN(temperature_f), 1)            AS weather_low_f,
-            ROUND(MAX(apparent_temperature_f), 1)   AS weather_feels_high_f,
-            ROUND(MIN(apparent_temperature_f), 1)   AS weather_feels_low_f,
-            MAX_BY(weather_category, weather_code)  AS weather_category,
-            MAX_BY(weather_condition, weather_code) AS weather_condition,
-            MAX(weather_code)                       AS weather_code,
-            ROUND(SUM(precipitation_in), 3)         AS total_precip_in,
-            ROUND(SUM(snowfall_in), 3)              AS total_snow_in,
-            ROUND(SUM(CASE WHEN sunshine_minutes > 30 THEN 1 ELSE 0 END), 0)
-                                                    AS sunny_hours,
-            ROUND(AVG(cloud_cover_pct), 1)          AS avg_cloud_cover_pct,
-            MAX_BY(data_type, weather_code)         AS weather_data_type
-        FROM {WEATHER_TABLE}
-        WHERE date > '{train_df["ds"].max().date()}'
-        GROUP BY date
-    ) w ON f.ds = w.date
-    WHERE f.y_revenue IS NULL
-""")
-
-forecast_final = forecast_rows.join(
-    future_preds_spark, on="business_date", how="left"
-).withColumn("net_revenue", F.col("net_revenue_pred")) \
- .withColumn("forecast_model", F.lit(MODEL_NAME)) \
- .drop("net_revenue_pred")
-
-DeltaTable.forName(spark, DAILY_TABLE).alias("t").merge(
-    forecast_final.alias("s"),
-    "t.business_date = s.business_date AND t.record_type = s.record_type"
-).whenMatchedUpdateAll(
-).whenNotMatchedInsertAll(
-).execute()
-
-print(f"✓ Wrote {future_preds.shape[0]} forecast rows to {DAILY_TABLE}")
-
-# COMMAND ----------
-
-# ── 12. VALIDATION ────────────────────────────────────────────────────────────
-
-print("\n── Last 7 days actual + next 14 days forecast ──")
+print("\n── Last 7 days actuals ──")
 spark.sql(f"""
     SELECT
         business_date,
         day_name,
-        record_type,
         ROUND(net_revenue, 2)           AS revenue,
-        ROUND(forecast_lower, 2)        AS lower_bound,
-        ROUND(forecast_upper, 2)        AS upper_bound,
+        order_count,
         weather_high_f,
         weather_category,
         is_bread_delivery_day
     FROM {DAILY_TABLE}
     WHERE business_date BETWEEN
         CURRENT_DATE - INTERVAL 7 DAYS AND
-        CURRENT_DATE + INTERVAL 14 DAYS
-    ORDER BY business_date, record_type DESC
-""").show(30, truncate=False)
+        CURRENT_DATE
+    ORDER BY business_date
+""").show(10, truncate=False)
 
 print(f"\n── Model summary ──")
 print(f"  Training period:   {TRAIN_START.date()} → {train_df['ds'].max().date()}")

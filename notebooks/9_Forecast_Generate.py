@@ -256,15 +256,54 @@ future_features['is_bread_delivery_day'] = (
     future_features['is_bread_delivery_day'].fillna(False).astype(int)
 )
 
+# Prior store monthly seasonality index — required by the revenue model regressor.
+# Same PRIOR_MONTHLY_LINEARITY as notebook 7. Normalized to annual mean = 0.
+# Smooth interpolation between month midpoints (15th) — must match notebook 7 exactly.
+_PRIOR_MONTHLY_LINEARITY = {
+    1: 0.065, 2: 0.064, 3: 0.073, 4: 0.075, 5: 0.101, 6: 0.109,
+    7: 0.115, 8: 0.114, 9: 0.083, 10: 0.077, 11: 0.061, 12: 0.062,
+}
+_prior_mean = np.mean(list(_PRIOR_MONTHLY_LINEARITY.values()))
+
+def _prior_seasonal_index(d):
+    d = pd.Timestamp(d)
+    if d.day < 15:
+        pm   = 12 if d.month == 1 else d.month - 1
+        py   = d.year - 1 if d.month == 1 else d.year
+        m1, m2 = pd.Timestamp(py, pm, 15), pd.Timestamp(d.year, d.month, 15)
+        v1  = (_PRIOR_MONTHLY_LINEARITY[pm]      / _prior_mean) - 1.0
+        v2  = (_PRIOR_MONTHLY_LINEARITY[d.month] / _prior_mean) - 1.0
+    else:
+        nm   = 1 if d.month == 12 else d.month + 1
+        ny   = d.year + 1 if d.month == 12 else d.year
+        m1, m2 = pd.Timestamp(d.year, d.month, 15), pd.Timestamp(ny, nm, 15)
+        v1  = (_PRIOR_MONTHLY_LINEARITY[d.month] / _prior_mean) - 1.0
+        v2  = (_PRIOR_MONTHLY_LINEARITY[nm]      / _prior_mean) - 1.0
+    t = (d - m1).days / (m2 - m1).days
+    return v1 + (v2 - v1) * t
+
+future_features['ne_seasonal_prior'] = future_features['ds'].apply(_prior_seasonal_index)
+
+# Training data ends in late April where the smooth seasonal index peaks around +0.036.
+# Summer months (May-July) push the raw index to +0.10 to +0.38 — far outside what
+# the model observed during training. Extrapolating that far makes even quiet May
+# Mondays project 2x April Mondays, which is not credible for a store with 5 months
+# of data. Cap at +0.05 (just above the late-April training max) to keep forecasts
+# grounded in observed behaviour while still allowing a modest spring/summer signal.
+_SEASONAL_PRIOR_CAP = 0.05
+future_features['ne_seasonal_prior'] = future_features['ne_seasonal_prior'].clip(upper=_SEASONAL_PRIOR_CAP)
+
 print(f"✓ Forward feature rows: {len(future_features)}")
 print(f"  Date range: {future_features['ds'].min().date()} → {future_features['ds'].max().date()}")
+print(f"  Seasonal prior range: {future_features['ne_seasonal_prior'].min():.3f} → {future_features['ne_seasonal_prior'].max():.3f} (cap={_SEASONAL_PRIOR_CAP})")
 print(f"  Future closures in window: {future_features['likely_future_closure'].sum()}")
 
 # COMMAND ----------
 
 # ── 9. GENERATE REVENUE FORECAST ──────────────────────────────────────────────
 
-revenue_input    = future_features[['ds', 'is_bread_delivery_day',
+revenue_input    = future_features[['ds', 'ne_seasonal_prior',
+                                     'is_bread_delivery_day',
                                      'weather_high_f', 'total_precip_in']].copy()
 revenue_forecast = revenue_model.predict(revenue_input)
 revenue_preds    = revenue_forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].copy()
