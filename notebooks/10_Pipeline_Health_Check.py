@@ -111,23 +111,23 @@ else:
 # is broken — this should never happen after a successful pipeline run.
 
 counts = spark.sql(f"""
-    SELECT forecast_type, COUNT(*) AS cnt
+    SELECT record_type, COUNT(*) AS cnt
     FROM {CATALOG}.platinum.daily_sales_combined
-    GROUP BY forecast_type
+    GROUP BY record_type
 """).collect()
 
-type_map  = {r["forecast_type"]: r["cnt"] for r in counts}
-n_actuals = type_map.get("ACTUAL",   0)
-n_fcast   = type_map.get("FORECAST", 0)
+type_map  = {r["record_type"]: r["cnt"] for r in counts}
+n_actuals = type_map.get("actual",   0)
+n_fcast   = type_map.get("forecast", 0)
 
 if n_actuals == 0:
     raise RuntimeError(
-        "FAIL — platinum.daily_sales_combined has no ACTUAL rows. "
+        "FAIL — platinum.daily_sales_combined has no 'actual' rows. "
         "The VIEW or gold.daily_sales_summary may be broken."
     )
 if n_fcast == 0:
     raise RuntimeError(
-        "FAIL — platinum.daily_sales_combined has no FORECAST rows. "
+        "FAIL — platinum.daily_sales_combined has no 'forecast' rows. "
         "NB9 did not write forward rows, or the platinum VIEW is broken."
     )
 print(f"✓ Platinum view: {n_actuals} actuals + {n_fcast} forecasts")
