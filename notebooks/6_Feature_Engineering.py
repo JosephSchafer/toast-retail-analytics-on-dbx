@@ -191,6 +191,8 @@ spark.sql(f"""
         weather_high_f          DOUBLE                  COMMENT 'Daily high temperature in Fahrenheit. Negative correlation with revenue (r=-0.25).',
         weather_low_f           DOUBLE                  COMMENT 'Daily low temperature in Fahrenheit. Negative correlation with revenue (r=-0.29).',
         weather_feels_high_f    DOUBLE                  COMMENT 'Daily high feels-like temperature. Often stronger behavioral driver than actual temp.',
+        weather_comfort_score   DOUBLE                  COMMENT 'Piecewise-linear comfort score (0-1), peaks at 62F feels-like. Cold min 40F, hot max 85F.',
+        heat_stress             DOUBLE                  COMMENT 'Linear heat penalty above 82F feels-like. Zero below threshold.',
         total_precip_in         DOUBLE                  COMMENT 'Total precipitation in inches. Negative correlation with revenue (r=-0.12).',
         total_snow_in           DOUBLE                  COMMENT 'Total snowfall in inches. Strong suppressor — closure risk at high values.',
         weather_category        STRING                  COMMENT 'Predominant weather category: Clear, Cloudy, Rainy, Snowy, Stormy, Foggy.',
@@ -238,8 +240,9 @@ print(f"✓ {FEATURES_TABLE} ready")
 # of history to ensure all lag values can be computed for the earliest
 # training rows.
 
-# Include 16 days of future weather forecast for forward prediction rows
-FUTURE_DAYS   = 16
+# Include 30 days of future weather forecast for forward prediction rows
+# Must be >= FORECAST_DAYS in 9_Forecast_Generate.py (currently 30)
+FUTURE_DAYS   = 30
 LAG_BUFFER    = 30   # extra days before training start for lag computation
 
 yesterday = (NOW_UTC - datetime.timedelta(days=1)).date()
@@ -257,7 +260,6 @@ if RUN_MODE == "incremental":
     if last_feature_date is None:
         history_start = spark.sql(f"""
             SELECT MIN(business_date) AS d FROM {DAILY_SUMMARY}
-            WHERE record_type = 'actual'
         """).collect()[0]["d"] - datetime.timedelta(days=LAG_BUFFER)
     else:
         # Reprocess last 14 days to refresh any lag features that may have changed
@@ -267,7 +269,6 @@ if RUN_MODE == "incremental":
 else:
     history_start = spark.sql(f"""
         SELECT MIN(business_date) AS d FROM {DAILY_SUMMARY}
-        WHERE record_type = 'actual'
     """).collect()[0]["d"] - datetime.timedelta(days=LAG_BUFFER)
     print(f"Full rebuild: {history_start} → {future_end}")
 
@@ -297,8 +298,7 @@ sales_df = spark.sql(f"""
         weather_category,
         weather_data_type
     FROM {DAILY_SUMMARY}
-    WHERE record_type = 'actual'
-      AND business_date >= '{history_start}'
+    WHERE business_date >= '{history_start}'
     ORDER BY business_date
 """).toPandas()
 
@@ -513,6 +513,43 @@ print("✓ Weather features computed")
 
 # COMMAND ----------
 
+# ── 10b. NON-LINEAR TEMPERATURE FEATURES ──────────────────────────────────────
+# Linear weather_high_f misses the U-shaped temperature response:
+# cold extremes (closure risk) and hot extremes (beach day / town empties) both
+# suppress revenue, while a comfortable 55-65°F window drives peak foot traffic.
+# Uses weather_feels_high_f (already shown to be a stronger behavioral driver
+# than actual temp for this coastal store).
+#
+# weather_comfort_score: piecewise-linear 0→1→0 peaked at ~62°F.
+#   Evaluate as a candidate regressor when retraining with summer data.
+# heat_stress: linear penalty above 82°F feels-like.
+#   Separates "too hot to be outside" from the comfort curve.
+
+COMFORT_PEAK_F   = 62.0
+COMFORT_COLD_MIN = 40.0
+COMFORT_HOT_MAX  = 85.0
+
+df['weather_comfort_score'] = np.where(
+    df['weather_feels_high_f'] <= COMFORT_COLD_MIN, 0.0,
+    np.where(
+        df['weather_feels_high_f'] <= COMFORT_PEAK_F,
+        (df['weather_feels_high_f'] - COMFORT_COLD_MIN) / (COMFORT_PEAK_F - COMFORT_COLD_MIN),
+        np.where(
+            df['weather_feels_high_f'] <= COMFORT_HOT_MAX,
+            (COMFORT_HOT_MAX - df['weather_feels_high_f']) / (COMFORT_HOT_MAX - COMFORT_PEAK_F),
+            0.0
+        )
+    )
+).clip(0.0, 1.0)
+
+df['heat_stress'] = (df['weather_feels_high_f'] - 82.0).clip(lower=0.0)
+
+print(f"✓ Non-linear temperature features computed "
+      f"(comfort_score: {df['weather_comfort_score'].min():.2f}–{df['weather_comfort_score'].max():.2f}, "
+      f"heat_stress: {df['heat_stress'].min():.1f}–{df['heat_stress'].max():.1f}°F above threshold)")
+
+# COMMAND ----------
+
 # ── 11. LAG FEATURES ──────────────────────────────────────────────────────────
 # Lag features use past values of the target as predictors.
 # We use y_revenue (imputed) so closure days don't create artificial zeros
@@ -591,6 +628,7 @@ final_cols = [
     'exclude_from_training', 'training_weight',
     'likely_snow_closure_risk', 'likely_future_closure',
     'weather_high_f', 'weather_low_f', 'weather_feels_high_f',
+    'weather_comfort_score', 'heat_stress',
     'total_precip_in', 'total_snow_in', 'weather_category',
     'is_precipitation_day', 'is_snow_day', 'weather_data_type',
     'lag_1_revenue', 'lag_6_revenue', 'lag_7_revenue',
@@ -605,7 +643,7 @@ df_final = df[final_cols].copy()
 
 # Trim to dates that will actually be written (exclude lag buffer before training start)
 actual_start = spark.sql(f"""
-    SELECT MIN(business_date) FROM {DAILY_SUMMARY} WHERE record_type = 'actual'
+    SELECT MIN(business_date) FROM {DAILY_SUMMARY}
 """).collect()[0][0]
 
 df_final = df_final[df_final['ds'] >= pd.Timestamp(actual_start)]

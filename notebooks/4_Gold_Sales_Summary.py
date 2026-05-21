@@ -232,9 +232,9 @@ date_filter = f"business_date BETWEEN '{process_from}' AND '{yesterday}'"
 
 # ── 5. BUILD WEATHER DAILY AGGREGATES ─────────────────────────────────────────
 # Pre-aggregate weather to daily grain for joining to both Gold tables.
-# Predominant weather category = the category with the most hours in the day.
-# Predominant weather code = the code from the single worst/most notable hour
-# (highest code value, as WMO codes generally increase in severity).
+# Filtered to store hours (7am–7pm ET) so overnight/after-hours conditions don't
+# distort the day's label. All three of weather_category, weather_condition, and
+# weather_code reflect the DOMINANT category (most hours), not the worst single hour.
 
 weather_daily = spark.sql(f"""
     WITH hourly AS (
@@ -253,6 +253,7 @@ weather_daily = spark.sql(f"""
             COUNT(*) OVER (PARTITION BY date, weather_category) AS category_hours
         FROM {WEATHER_HOURLY}
         WHERE date BETWEEN '{process_from}' AND '{yesterday}'
+          AND HOUR(CONVERT_TIMEZONE('UTC', 'America/New_York', time)) BETWEEN 7 AND 19
     )
     SELECT
         date,
@@ -266,9 +267,9 @@ weather_daily = spark.sql(f"""
                                                     AS sunny_hours,
         ROUND(AVG(cloud_cover_pct), 1)              AS avg_cloud_cover_pct,
         MAX_BY(weather_category, category_hours)    AS weather_category,
-        MAX_BY(weather_condition, weather_code)     AS weather_condition,
-        MAX(weather_code)                           AS weather_code,
-        MAX_BY(data_type, weather_code)             AS weather_data_type
+        MAX_BY(weather_condition, category_hours)   AS weather_condition,
+        MAX_BY(weather_code, category_hours)        AS weather_code,
+        MAX_BY(data_type, category_hours)           AS weather_data_type
     FROM hourly
     GROUP BY date
 """)
@@ -401,12 +402,15 @@ DAILY_UPDATE_COLS = [
     "_gold_updated_at", "_batch_id",
 ]
 
+DAILY_INSERT_COLS = ["business_date"] + DAILY_UPDATE_COLS
+
 DeltaTable.forName(spark, DAILY_TABLE).alias("t").merge(
     daily_actuals.alias("s"),
     "t.business_date = s.business_date"
 ).whenMatchedUpdate(
     set={col: f"s.{col}" for col in DAILY_UPDATE_COLS}
-).whenNotMatchedInsertAll(
+).whenNotMatchedInsert(
+    values={col: f"s.{col}" for col in DAILY_INSERT_COLS}
 ).execute()
 
 print(f"✓ Merged into {DAILY_TABLE}")

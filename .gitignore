@@ -1,5 +1,9 @@
 # Databricks
 .databricks
+.databricks-resources.json
+
+# Generated output
+*.html
 
 # Python
 .venv/

@@ -137,15 +137,32 @@ PRIOR_MONTHLY_LINEARITY = {
     2:  0.064,   # February
     3:  0.073,   # March
     4:  0.075,   # April
-    5:  0.101,   # May
-    6:  0.109,   # June
-    7:  0.115,   # July   ← peak
-    8:  0.114,   # August
-    9:  0.083,   # September
+    5:  0.108,   # May       ↑ tourism season starts
+    6:  0.122,   # June      ↑ peak summer tourism
+    7:  0.132,   # July      ← peak (tourism + snowbird return)
+    8:  0.126,   # August    ↑ late summer
+    9:  0.093,   # September ↑ shoulder season
     10: 0.077,   # October
     11: 0.061,   # November
     12: 0.062,   # December
 }
+
+# Distribute monthly proportions evenly across days, then sum by ISO week and normalize.
+# This produces 52 weekly weights whose shape mirrors the monthly prior but at finer
+# resolution — no hard month-boundary steps.
+from calendar import monthrange as _monthrange
+_REF_YEAR = 2025
+_daily_lin = {}
+for _m, _prop in PRIOR_MONTHLY_LINEARITY.items():
+    _days = _monthrange(_REF_YEAR, _m)[1]
+    for _d in range(1, _days + 1):
+        _daily_lin[pd.Timestamp(_REF_YEAR, _m, _d)] = _prop / _days
+_weekly_sums: dict = {}
+for _dt, _v in _daily_lin.items():
+    _w = int(_dt.isocalendar()[1])
+    _weekly_sums[_w] = _weekly_sums.get(_w, 0.0) + _v
+_wk_total = sum(_weekly_sums.values())
+PRIOR_WEEKLY_LINEARITY = {w: _weekly_sums[w] / _wk_total for w in sorted(_weekly_sums)}
 
 # ── Prophet hyperparameters ────────────────────────────────────────────────────
 # growth='flat': the store has been at a stable plateau since Dec 2025.
@@ -252,28 +269,27 @@ print(f"  Reflects higher ticket size but same location foot traffic constraints
 # Example: if the learned coefficient is 0.5 and July prior index = +0.38,
 # the multiplicative contribution is +19% above baseline for July → reasonable.
 
-_mean_lin = np.mean(list(PRIOR_MONTHLY_LINEARITY.values()))
+_mean_weekly = np.mean(list(PRIOR_WEEKLY_LINEARITY.values()))
 
 def prior_seasonal_index(ds):
-    # Treat each month's value as anchored at the 15th (midpoint).
-    # Interpolate linearly between adjacent midpoints so the regressor
-    # transitions smoothly across month boundaries rather than stepping
-    # on the 1st of each month (which caused the visible Apr→May jump).
+    # Linear interpolation between ISO-week Thursday midpoints (7-day spans).
+    # Finer than monthly midpoints — no visible steps at month boundaries.
     if not isinstance(ds, pd.Timestamp):
         ds = pd.Timestamp(ds)
-    if ds.day < 15:
-        pm   = 12 if ds.month == 1 else ds.month - 1
-        py   = ds.year - 1 if ds.month == 1 else ds.year
-        m1, m2 = pd.Timestamp(py, pm, 15), pd.Timestamp(ds.year, ds.month, 15)
-        v1  = (PRIOR_MONTHLY_LINEARITY[pm]       / _mean_lin) - 1.0
-        v2  = (PRIOR_MONTHLY_LINEARITY[ds.month] / _mean_lin) - 1.0
-    else:
-        nm   = 1 if ds.month == 12 else ds.month + 1
-        ny   = ds.year + 1 if ds.month == 12 else ds.year
-        m1, m2 = pd.Timestamp(ds.year, ds.month, 15), pd.Timestamp(ny, nm, 15)
-        v1  = (PRIOR_MONTHLY_LINEARITY[ds.month] / _mean_lin) - 1.0
-        v2  = (PRIOR_MONTHLY_LINEARITY[nm]       / _mean_lin) - 1.0
-    t = (ds - m1).days / (m2 - m1).days
+    iso_week = int(ds.isocalendar()[1])
+    days_to_thu = 4 - ds.isoweekday()          # Thursday = isoweekday 4
+    thu_cur = ds + pd.Timedelta(days=days_to_thu)
+    if ds < thu_cur:                            # before this week's Thursday
+        w_prev   = iso_week - 1 if iso_week > 1 else 52
+        thu_prev = thu_cur - pd.Timedelta(weeks=1)
+        v1 = (PRIOR_WEEKLY_LINEARITY.get(w_prev,   _mean_weekly) / _mean_weekly) - 1.0
+        v2 = (PRIOR_WEEKLY_LINEARITY[iso_week] / _mean_weekly) - 1.0
+        t  = (ds - thu_prev).days / 7
+    else:                                       # Thursday through Saturday
+        w_next   = iso_week + 1 if iso_week < 52 else 1
+        v1 = (PRIOR_WEEKLY_LINEARITY[iso_week] / _mean_weekly) - 1.0
+        v2 = (PRIOR_WEEKLY_LINEARITY.get(w_next,   _mean_weekly) / _mean_weekly) - 1.0
+        t  = (ds - thu_cur).days / 7
     return v1 + (v2 - v1) * t
 
 def prior_seasonality(ds_series):
@@ -285,13 +301,12 @@ future_df['ne_seasonal_prior']      = prior_seasonality(future_df['ds']).values
 train_df['ne_seasonal_prior']       = prior_seasonality(train_df['ds']).values
 
 print("Prior seasonal index (smooth interpolation — 0.0 = annual average):")
-print("  Midpoint values (15th of each month):")
-for month, lin in PRIOR_MONTHLY_LINEARITY.items():
-    val  = (lin / _mean_lin) - 1.0
+print("  Weekly midpoint values (Thursday of each ISO week):")
+for week, lin in PRIOR_WEEKLY_LINEARITY.items():
+    val  = (lin / _mean_weekly) - 1.0
     bar  = "█" * int(abs(val) * 30)
     sign = "+" if val >= 0 else "-"
-    mn   = pd.Timestamp(f"2026-{month:02d}-01").strftime("%B")
-    print(f"  {mn:<12} {sign}{abs(val)*100:4.1f}%  {bar}")
+    print(f"  Wk {week:02d}  {sign}{abs(val)*100:4.1f}%  {bar}")
 print()
 print("  Boundary check (Apr 30 → May 1 should be near-identical):")
 for ds_str in ['2026-04-28', '2026-04-30', '2026-05-01', '2026-05-03']:
@@ -472,6 +487,11 @@ with mlflow.start_run(run_name="prophet_revenue_v6_additive_seasonal_prior") as 
     mlflow.log_param("holiday_count",    len(holidays_df))
     mlflow.log_param("target",           "net_revenue")
     mlflow.log_param("seasonal_prior",   "prior_store_avg_2022_2023")
+    mlflow.log_metric("backtest_mape",        round(_bt_mape,     2))
+    mlflow.log_metric("backtest_mae",         round(_bt_mae,      2))
+    mlflow.log_metric("backtest_ci_coverage", round(_bt_ci_cover, 2))
+    mlflow.set_tag("training_date",           str(pd.Timestamp.today().date()))
+    mlflow.log_param("training_data_through", str(train_df['ds'].max().date()))
 
     # ── Instantiate Prophet ───────────────────────────────────────────────────
     model = Prophet(
@@ -625,6 +645,16 @@ with mlflow.start_run(run_name="prophet_revenue_v6_additive_seasonal_prior") as 
         signature             = signature,
     )
 
+    # Immediately promote the new version to @production so notebook 9 picks it up
+    _reg_client  = mlflow.tracking.MlflowClient()
+    _new_versions = _reg_client.search_model_versions(
+        f"name='{MODEL_NAME}'", order_by=["version_number DESC"], max_results=1
+    )
+    if _new_versions:
+        _new_ver = _new_versions[0].version
+        _reg_client.set_registered_model_alias(MODEL_NAME, "production", _new_ver)
+        print(f"  ✓ Promoted v{_new_ver} → @production alias")
+
     print(f"\n✓ Model logged and registered")
     print(f"  Run ID:     {run_id}")
     print(f"  Model name: {MODEL_NAME}")
@@ -636,6 +666,8 @@ with mlflow.start_run(run_name="prophet_revenue_v6_additive_seasonal_prior") as 
 # With ~4 months of training data (Dec-Mar), we have limited room for
 # cross-validation folds. We try with conservative settings.
 
+cv_mae = cv_mape = cv_rmse = None
+cv_mape_7d = cv_mape_14d = None
 print("Running cross-validation...")
 with mlflow.start_run(run_id=run_id):
     try:
@@ -686,6 +718,14 @@ with mlflow.start_run(run_id=run_id):
         mlflow.log_artifact('/tmp/prophet_cv_horizon_v2.png')
         plt.show()
 
+        for _h in [7, 14]:
+            _hm_row = hm[hm['days'] == _h]
+            if not _hm_row.empty:
+                _v = round(float(_hm_row['abs_pct_err'].values[0]), 2)
+                mlflow.log_metric(f"cv_mape_{_h}d", _v)
+                if _h == 7:  cv_mape_7d  = _v
+                if _h == 14: cv_mape_14d = _v
+
     except Exception as e:
         print(f"Cross-validation skipped: {e}")
         print("This can happen with limited training data. Model is still valid.")
@@ -721,3 +761,70 @@ print(f"  MAPE:              {mape:.1f}%")
 print(f"  R²:                {r2:.3f}")
 print(f"  MLflow run:        {run_id}")
 print(f"  Registered model:  {MODEL_NAME}")
+
+# COMMAND ----------
+
+# ── 12. LOG TO ACCURACY HISTORY ───────────────────────────────────────────────
+
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {CATALOG}.gold.forecast_accuracy_history (
+        logged_at              TIMESTAMP  COMMENT 'Row write timestamp',
+        model_name             STRING     COMMENT 'revenue or orders',
+        mlflow_run_id          STRING     COMMENT 'MLflow run ID',
+        training_date          DATE       COMMENT 'Date of this retrain',
+        training_rows          INT        COMMENT 'Observations in training set',
+        training_data_through  DATE       COMMENT 'Last training date',
+        train_mape             DOUBLE     COMMENT 'In-sample MAPE %',
+        train_mae              DOUBLE     COMMENT 'In-sample MAE',
+        train_r2               DOUBLE     COMMENT 'In-sample R²',
+        cv_mape                DOUBLE     COMMENT 'Cross-validated MAPE %',
+        cv_mae                 DOUBLE     COMMENT 'Cross-validated MAE',
+        cv_mape_7d             DOUBLE     COMMENT 'CV MAPE at 7-day horizon %',
+        cv_mape_14d            DOUBLE     COMMENT 'CV MAPE at 14-day horizon %',
+        backtest_mape          DOUBLE     COMMENT 'Dec-Feb→Mar-Apr MAPE % (revenue only)',
+        backtest_mae           DOUBLE     COMMENT 'Dec-Feb→Mar-Apr MAE (revenue only)',
+        backtest_ci_coverage   DOUBLE     COMMENT 'CI coverage % in backtest (revenue only)',
+        notes                  STRING     COMMENT 'Free-text notes'
+    )
+    USING DELTA
+    COMMENT 'One row per model retrain. Tracks accuracy trends for retraining decisions.'
+""")
+
+_today_str    = str(pd.Timestamp.today().date())
+_train_max    = str(train_df['ds'].max().date())
+_cv_mape_str  = str(round(cv_mape,     2)) if cv_mape     is not None else "NULL"
+_cv_mae_str   = str(round(cv_mae,      2)) if cv_mae      is not None else "NULL"
+_cv_7d_str    = str(cv_mape_7d)            if cv_mape_7d  is not None else "NULL"
+_cv_14d_str   = str(cv_mape_14d)           if cv_mape_14d is not None else "NULL"
+
+spark.sql(f"""
+    INSERT INTO {CATALOG}.gold.forecast_accuracy_history
+    (logged_at, model_name, mlflow_run_id, training_date, training_rows,
+     training_data_through, train_mape, train_mae, train_r2,
+     cv_mape, cv_mae, cv_mape_7d, cv_mape_14d,
+     backtest_mape, backtest_mae, backtest_ci_coverage, notes)
+    VALUES (
+        current_timestamp(),
+        'revenue',
+        '{run_id}',
+        DATE '{_today_str}',
+        {len(train_df)},
+        DATE '{_train_max}',
+        {round(mape, 2)},
+        {round(mae,  2)},
+        {round(r2,   4)},
+        {_cv_mape_str},
+        {_cv_mae_str},
+        {_cv_7d_str},
+        {_cv_14d_str},
+        {round(_bt_mape,    2)},
+        {round(_bt_mae,     2)},
+        {round(_bt_ci_cover, 2)},
+        NULL
+    )
+""")
+
+print(f"✓ Revenue training run logged to {CATALOG}.gold.forecast_accuracy_history")
+print(f"  train_mape={round(mape,2)}%  "
+      f"cv_mape={round(cv_mape,2) if cv_mape is not None else 'N/A'}%  "
+      f"backtest_mape={round(_bt_mape,2)}%")

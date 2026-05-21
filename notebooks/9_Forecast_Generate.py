@@ -241,6 +241,9 @@ future_features = spark.sql(f"""
         ds,
         is_bread_delivery_day,
         weather_high_f,
+        weather_feels_high_f,
+        weather_comfort_score,
+        heat_stress,
         total_precip_in,
         likely_future_closure
     FROM {FEATURES_TABLE}
@@ -251,46 +254,62 @@ future_features = spark.sql(f"""
 
 future_features['ds'] = pd.to_datetime(future_features['ds'])
 future_features['weather_high_f']        = future_features['weather_high_f'].fillna(55.0)
+future_features['weather_feels_high_f']  = future_features['weather_feels_high_f'].fillna(55.0)
+future_features['weather_comfort_score'] = future_features['weather_comfort_score'].fillna(0.7)
+future_features['heat_stress']           = future_features['heat_stress'].fillna(0.0)
 future_features['total_precip_in']       = future_features['total_precip_in'].fillna(0.0)
 future_features['is_bread_delivery_day'] = (
     future_features['is_bread_delivery_day'].fillna(False).astype(int)
 )
 
-# Prior store monthly seasonality index — required by the revenue model regressor.
-# Same PRIOR_MONTHLY_LINEARITY as notebook 7. Normalized to annual mean = 0.
-# Smooth interpolation between month midpoints (15th) — must match notebook 7 exactly.
+# Prior store weekly seasonality index — required by the revenue model regressor.
+# Same source data as notebook 7 (PRIOR_MONTHLY_LINEARITY), converted to 52 ISO-week
+# weights by distributing each month's proportion evenly across its days then
+# summing per week. Must match notebook 7 exactly.
 _PRIOR_MONTHLY_LINEARITY = {
-    1: 0.065, 2: 0.064, 3: 0.073, 4: 0.075, 5: 0.101, 6: 0.109,
-    7: 0.115, 8: 0.114, 9: 0.083, 10: 0.077, 11: 0.061, 12: 0.062,
+    1: 0.065, 2: 0.064, 3: 0.073, 4: 0.075, 5: 0.108, 6: 0.122,
+    7: 0.132, 8: 0.126, 9: 0.093, 10: 0.077, 11: 0.061, 12: 0.062,
 }
-_prior_mean = np.mean(list(_PRIOR_MONTHLY_LINEARITY.values()))
+from calendar import monthrange as _monthrange
+_REF_YEAR = 2025
+_daily_lin = {}
+for _m, _prop in _PRIOR_MONTHLY_LINEARITY.items():
+    _days = _monthrange(_REF_YEAR, _m)[1]
+    for _d in range(1, _days + 1):
+        _daily_lin[pd.Timestamp(_REF_YEAR, _m, _d)] = _prop / _days
+_weekly_sums: dict = {}
+for _dt, _v in _daily_lin.items():
+    _w = int(_dt.isocalendar()[1])
+    _weekly_sums[_w] = _weekly_sums.get(_w, 0.0) + _v
+_wk_total = sum(_weekly_sums.values())
+_PRIOR_WEEKLY_LINEARITY = {w: _weekly_sums[w] / _wk_total for w in sorted(_weekly_sums)}
+_prior_mean_weekly = np.mean(list(_PRIOR_WEEKLY_LINEARITY.values()))
 
 def _prior_seasonal_index(d):
     d = pd.Timestamp(d)
-    if d.day < 15:
-        pm   = 12 if d.month == 1 else d.month - 1
-        py   = d.year - 1 if d.month == 1 else d.year
-        m1, m2 = pd.Timestamp(py, pm, 15), pd.Timestamp(d.year, d.month, 15)
-        v1  = (_PRIOR_MONTHLY_LINEARITY[pm]      / _prior_mean) - 1.0
-        v2  = (_PRIOR_MONTHLY_LINEARITY[d.month] / _prior_mean) - 1.0
+    iso_week = int(d.isocalendar()[1])
+    days_to_thu = 4 - d.isoweekday()
+    thu_cur = d + pd.Timedelta(days=days_to_thu)
+    if d < thu_cur:
+        w_prev   = iso_week - 1 if iso_week > 1 else 52
+        thu_prev = thu_cur - pd.Timedelta(weeks=1)
+        v1 = (_PRIOR_WEEKLY_LINEARITY.get(w_prev,    _prior_mean_weekly) / _prior_mean_weekly) - 1.0
+        v2 = (_PRIOR_WEEKLY_LINEARITY[iso_week] / _prior_mean_weekly) - 1.0
+        t  = (d - thu_prev).days / 7
     else:
-        nm   = 1 if d.month == 12 else d.month + 1
-        ny   = d.year + 1 if d.month == 12 else d.year
-        m1, m2 = pd.Timestamp(d.year, d.month, 15), pd.Timestamp(ny, nm, 15)
-        v1  = (_PRIOR_MONTHLY_LINEARITY[d.month] / _prior_mean) - 1.0
-        v2  = (_PRIOR_MONTHLY_LINEARITY[nm]      / _prior_mean) - 1.0
-    t = (d - m1).days / (m2 - m1).days
+        w_next = iso_week + 1 if iso_week < 52 else 1
+        v1 = (_PRIOR_WEEKLY_LINEARITY[iso_week] / _prior_mean_weekly) - 1.0
+        v2 = (_PRIOR_WEEKLY_LINEARITY.get(w_next,    _prior_mean_weekly) / _prior_mean_weekly) - 1.0
+        t  = (d - thu_cur).days / 7
     return v1 + (v2 - v1) * t
 
 future_features['ne_seasonal_prior'] = future_features['ds'].apply(_prior_seasonal_index)
 
-# Training data ends in late April where the smooth seasonal index peaks around +0.036.
-# Summer months (May-July) push the raw index to +0.10 to +0.38 — far outside what
-# the model observed during training. Extrapolating that far makes even quiet May
-# Mondays project 2x April Mondays, which is not credible for a store with 5 months
-# of data. Cap at +0.05 (just above the late-April training max) to keep forecasts
-# grounded in observed behaviour while still allowing a modest spring/summer signal.
-_SEASONAL_PRIOR_CAP = 0.05
+# Summer raw index (May-Sep) reaches +0.22 to +0.50 above the annual mean.
+# Cap limits how far we extrapolate beyond the training window (all negative/near-zero).
+# Raised to 0.20 to let the tourism/snowbird summer pattern through while still
+# preventing the full +50% extrapolation (model hasn't observed a summer yet).
+_SEASONAL_PRIOR_CAP = 0.20
 future_features['ne_seasonal_prior'] = future_features['ne_seasonal_prior'].clip(upper=_SEASONAL_PRIOR_CAP)
 
 print(f"✓ Forward feature rows: {len(future_features)}")

@@ -42,6 +42,7 @@
 # MAGIC
 # MAGIC | Version | Date | Author | Change |
 # MAGIC |---|---|---|---|
+# MAGIC | v2 | 2026-04-19 | JS | Switched to flat growth; reduced seasonality_prior_scale grid 5/10/10→1/2/3 — same fix as revenue model v3 |
 # MAGIC | v1 | 2026-03-28 | JS | Initial build |
 
 # COMMAND ----------
@@ -100,36 +101,55 @@ TRAIN_START   = pd.Timestamp('2025-12-01')
 # Order count seasonality mirrors revenue seasonality at this location
 PRIOR_MONTHLY_LINEARITY = {
     1:  0.065,  2:  0.064,  3:  0.073,  4:  0.075,
-    5:  0.101,  6:  0.109,  7:  0.115,  8:  0.114,
-    9:  0.083,  10: 0.077,  11: 0.061,  12: 0.062,
+    5:  0.108,  6:  0.122,  7:  0.132,  8:  0.126,
+    9:  0.093,  10: 0.077,  11: 0.061,  12: 0.062,
 }
+
+# Convert to 52 ISO-week weights for consistent display with revenue model
+from calendar import monthrange as _monthrange
+_REF_YEAR = 2025
+_daily_lin_o = {}
+for _m, _prop in PRIOR_MONTHLY_LINEARITY.items():
+    _days = _monthrange(_REF_YEAR, _m)[1]
+    for _d in range(1, _days + 1):
+        _daily_lin_o[pd.Timestamp(_REF_YEAR, _m, _d)] = _prop / _days
+_weekly_sums_o: dict = {}
+for _dt, _v in _daily_lin_o.items():
+    _w = int(_dt.isocalendar()[1])
+    _weekly_sums_o[_w] = _weekly_sums_o.get(_w, 0.0) + _v
+_wk_total_o = sum(_weekly_sums_o.values())
+PRIOR_WEEKLY_LINEARITY = {w: _weekly_sums_o[w] / _wk_total_o for w in sorted(_weekly_sums_o)}
 
 # Parameter grid — same structure as revenue model for comparability
 # Revenue model winner was tight_trend_moderate_seasonal (cv_mape=21.7%)
 # We start with that as the baseline and test a couple of variations
+# seasonality_prior_scale reduced from 5/10/10 → 1/2/3 to avoid over-reliance
+# on the prior store summer shape when we have no observed summer data yet.
 PARAM_GRID = [
     {
         "changepoint_prior_scale": 0.01,
-        "seasonality_prior_scale": 5.0,
+        "seasonality_prior_scale": 1.0,
         "holidays_prior_scale":    10.0,
-        "run_label":               "tight_trend_moderate_seasonal",
-    },
-    {
-        "changepoint_prior_scale": 0.05,
-        "seasonality_prior_scale": 10.0,
-        "holidays_prior_scale":    20.0,
-        "run_label":               "moderate_trend_strong_seasonal",
+        "run_label":               "flat_soft_seasonal",
     },
     {
         "changepoint_prior_scale": 0.01,
-        "seasonality_prior_scale": 10.0,
+        "seasonality_prior_scale": 2.0,
+        "holidays_prior_scale":    10.0,
+        "run_label":               "flat_moderate_seasonal",
+    },
+    {
+        "changepoint_prior_scale": 0.01,
+        "seasonality_prior_scale": 3.0,
         "holidays_prior_scale":    20.0,
-        "run_label":               "tight_trend_strong_seasonal",
+        "run_label":               "flat_stronger_seasonal",
     },
 ]
 
+# growth='flat': mirrors the revenue model fix. The store is at a stable
+# plateau since Dec 2025; linear trend extrapolation caused 2-3x overforecasts.
 PROPHET_FIXED = {
-    "growth":             "linear",
+    "growth":             "flat",
     "seasonality_mode":   "multiplicative",
     "yearly_seasonality": False,
     "weekly_seasonality": True,
@@ -249,14 +269,13 @@ print(f"✓ Holidays: {len(holidays_df)} rows, {holidays_df['holiday'].nunique()
 
 # ── 7. PRINT PRIOR SEASONALITY ────────────────────────────────────────────────
 
-print("Prior seasonality (normalized):")
-mean_lin = np.mean(list(PRIOR_MONTHLY_LINEARITY.values()))
-for month, lin in PRIOR_MONTHLY_LINEARITY.items():
-    normalized  = (lin / mean_lin) - 1.0
+print("Prior seasonality (normalized, weekly):")
+mean_weekly = np.mean(list(PRIOR_WEEKLY_LINEARITY.values()))
+for week, lin in PRIOR_WEEKLY_LINEARITY.items():
+    normalized  = (lin / mean_weekly) - 1.0
     bar         = "█" * int(abs(normalized) * 20)
     sign        = "+" if normalized >= 0 else "-"
-    month_name  = pd.Timestamp(f"2026-{month:02d}-01").strftime("%B")
-    print(f"  {month_name:<12} {sign}{abs(normalized)*100:4.1f}%  {bar}")
+    print(f"  Wk {week:02d}  {sign}{abs(normalized)*100:4.1f}%  {bar}")
 
 # COMMAND ----------
 
@@ -300,6 +319,8 @@ for params in PARAM_GRID:
         mlflow.log_param("target",          "order_count")
         mlflow.log_param("seasonal_prior",  "prior_store_avg_2022_2023")
         mlflow.log_param("run_label",       run_label)
+        mlflow.set_tag("training_date",           str(pd.Timestamp.today().date()))
+        mlflow.log_param("training_data_through", str(train_df['ds'].max().date()))
 
         # ── Build model ───────────────────────────────────────────────────────
         model = Prophet(
@@ -492,65 +513,44 @@ mae           = best["mae"]
 cv_mape       = best["cv_mape"]
 
 with mlflow.start_run(run_id=run_id):
+    # Unity Catalog requires a model signature (input + output schema).
+    from mlflow.models.signature import infer_signature
+    _sig_input  = forecast_input[["ds", "is_bread_delivery_day", "weather_high_f"]].head(10)
+    _sig_output = forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].head(10)
+    signature   = infer_signature(_sig_input, _sig_output)
     mlflow.prophet.log_model(
         pr_model              = model,
         name                  = "prophet_orders_model",
-        input_example         = forecast_input[["ds",
-                                "is_bread_delivery_day",
-                                "weather_high_f"]].head(5),
+        input_example         = _sig_input.head(5),
         registered_model_name = MODEL_NAME,
+        signature             = signature,
     )
     mlflow.set_tag("best_run", "true")
     mlflow.set_tag("selection_criterion", "cv_mape")
+
+    # Immediately promote the new version to @production so notebook 9 picks it up
+    _reg_client   = mlflow.tracking.MlflowClient()
+    _new_versions = _reg_client.search_model_versions(
+        f"name='{MODEL_NAME}'", order_by=["version_number DESC"], max_results=1
+    )
+    if _new_versions:
+        _new_ver = _new_versions[0].version
+        _reg_client.set_registered_model_alias(MODEL_NAME, "production", _new_ver)
+        print(f"  ✓ Promoted v{_new_ver} → @production alias")
 
 print(f"\n✓ Best model registered as '{MODEL_NAME}'")
 print(f"  View at: Experiments → {EXPERIMENT_NAME}")
 
 # COMMAND ----------
 
-# ── 11. WRITE FORECAST ORDER COUNTS TO GOLD ──────────────────────────────────
-# Write predicted order counts for future dates back to daily_sales_summary.
-# Joins to existing forecast rows (written by revenue model) and updates
-# the order_count column.
+# ── 11. VALIDATION ────────────────────────────────────────────────────────────
+# Forecast rows are written by 9_Forecast_Generate.py — nothing to write here.
 
-future_preds = forecast[
-    forecast["ds"] > pd.Timestamp(train_df["ds"].max())
-][["ds", "yhat", "yhat_lower", "yhat_upper"]].copy()
-
-future_preds["yhat"]       = future_preds["yhat"].clip(0).round(0)
-future_preds["yhat_lower"] = future_preds["yhat_lower"].clip(0).round(0)
-future_preds["yhat_upper"] = future_preds["yhat_upper"].clip(0).round(0)
-
-future_preds_spark = spark.createDataFrame(
-    future_preds.rename(columns={
-        "ds":         "business_date",
-        "yhat":       "order_count_pred",
-        "yhat_lower": "order_lower",
-        "yhat_upper": "order_upper",
-    })
-).withColumn("business_date", F.col("business_date").cast("date")) \
- .withColumn("order_count_pred", F.col("order_count_pred").cast("integer"))
-
-# Update order_count on existing forecast rows
-DeltaTable.forName(spark, DAILY_TABLE).alias("t").merge(
-    future_preds_spark.alias("s"),
-    "t.business_date = s.business_date AND t.record_type = 'forecast'"
-).whenMatchedUpdate(set={
-    "order_count": "s.order_count_pred",
-}).execute()
-
-print(f"✓ Updated order_count on {future_preds.shape[0]} forecast rows in {DAILY_TABLE}")
-
-# COMMAND ----------
-
-# ── 12. VALIDATION ────────────────────────────────────────────────────────────
-
-print("\n── Last 7 days actual + next 14 days forecast (revenue + orders) ──")
+print("\n── Last 7 days actuals (orders) ──")
 spark.sql(f"""
     SELECT
         business_date,
         day_name,
-        record_type,
         order_count,
         ROUND(net_revenue, 2)           AS revenue,
         ROUND(net_revenue /
@@ -561,9 +561,9 @@ spark.sql(f"""
     FROM {DAILY_TABLE}
     WHERE business_date BETWEEN
         CURRENT_DATE - INTERVAL 7 DAYS AND
-        CURRENT_DATE + INTERVAL 14 DAYS
-    ORDER BY business_date, record_type DESC
-""").show(30, truncate=False)
+        CURRENT_DATE
+    ORDER BY business_date
+""").show(10, truncate=False)
 
 print(f"\n── Model summary ──")
 print(f"  Training period:   {TRAIN_START.date()} → {train_df['ds'].max().date()}")
@@ -575,3 +575,65 @@ print(f"  CV MAPE:           {cv_mape:.1f}%")
 print(f"  R²:                {r2:.3f}")
 print(f"  MLflow run:        {run_id}")
 print(f"  Registered model:  {MODEL_NAME}")
+
+# COMMAND ----------
+
+# ── 12. LOG TO ACCURACY HISTORY ───────────────────────────────────────────────
+
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {CATALOG}.gold.forecast_accuracy_history (
+        logged_at              TIMESTAMP  COMMENT 'Row write timestamp',
+        model_name             STRING     COMMENT 'revenue or orders',
+        mlflow_run_id          STRING     COMMENT 'MLflow run ID',
+        training_date          DATE       COMMENT 'Date of this retrain',
+        training_rows          INT        COMMENT 'Observations in training set',
+        training_data_through  DATE       COMMENT 'Last training date',
+        train_mape             DOUBLE     COMMENT 'In-sample MAPE %',
+        train_mae              DOUBLE     COMMENT 'In-sample MAE',
+        train_r2               DOUBLE     COMMENT 'In-sample R²',
+        cv_mape                DOUBLE     COMMENT 'Cross-validated MAPE %',
+        cv_mae                 DOUBLE     COMMENT 'Cross-validated MAE',
+        cv_mape_7d             DOUBLE     COMMENT 'CV MAPE at 7-day horizon %',
+        cv_mape_14d            DOUBLE     COMMENT 'CV MAPE at 14-day horizon %',
+        backtest_mape          DOUBLE     COMMENT 'Dec-Feb→Mar-Apr MAPE % (revenue only)',
+        backtest_mae           DOUBLE     COMMENT 'Dec-Feb→Mar-Apr MAE (revenue only)',
+        backtest_ci_coverage   DOUBLE     COMMENT 'CI coverage % in backtest (revenue only)',
+        notes                  STRING     COMMENT 'Free-text notes'
+    )
+    USING DELTA
+    COMMENT 'One row per model retrain. Tracks accuracy trends for retraining decisions.'
+""")
+
+_today_str   = str(pd.Timestamp.today().date())
+_train_max   = str(train_df['ds'].max().date())
+_cv_mape_str = str(round(cv_mape, 2)) if cv_mape is not None else "NULL"
+
+spark.sql(f"""
+    INSERT INTO {CATALOG}.gold.forecast_accuracy_history
+    (logged_at, model_name, mlflow_run_id, training_date, training_rows,
+     training_data_through, train_mape, train_mae, train_r2,
+     cv_mape, cv_mae, cv_mape_7d, cv_mape_14d,
+     backtest_mape, backtest_mae, backtest_ci_coverage, notes)
+    VALUES (
+        current_timestamp(),
+        'orders',
+        '{run_id}',
+        DATE '{_today_str}',
+        {len(train_df)},
+        DATE '{_train_max}',
+        {round(mape, 2)},
+        {round(mae,  2)},
+        {round(r2,   4)},
+        {_cv_mape_str},
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        '{best["run_label"]}'
+    )
+""")
+
+print(f"✓ Orders training run logged to {CATALOG}.gold.forecast_accuracy_history")
+print(f"  train_mape={round(mape,2)}%  cv_mape={round(cv_mape,2) if cv_mape is not None else 'N/A'}%")
