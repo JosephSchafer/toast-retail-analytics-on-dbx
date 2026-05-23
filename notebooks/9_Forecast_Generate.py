@@ -51,7 +51,8 @@
 # MAGIC | Version | Date | Author | Change |
 # MAGIC |---|---|---|---|
 # MAGIC | v1 | 2026-03-28 | JS | Initial build — wrote to daily_sales_summary |
-# MAGIC | v2 | 2026-03-31 | JS | Retargeted to gold.daily_sales_forecast to prevent duplication |
+# MAGIC | v3 | 2026-05-23 | JS | Split ne_seasonal_prior into ne_prior_weekday/weekend to match NB7 v7. Added exponentially-weighted rolling DOW blend (λ=0.75): 50/50 blend for days 1-7, 25/75 for days 8-14, Prophet-only for days 15-30. |
+| v2 | 2026-03-31 | JS | Retargeted to gold.daily_sales_forecast to prevent duplication |
 
 # COMMAND ----------
 
@@ -312,6 +313,13 @@ future_features['ne_seasonal_prior'] = future_features['ds'].apply(_prior_season
 _SEASONAL_PRIOR_CAP = 0.20
 future_features['ne_seasonal_prior'] = future_features['ne_seasonal_prior'].clip(upper=_SEASONAL_PRIOR_CAP)
 
+# Split into weekend/weekday components — must match NB7 v7 regressor definitions exactly.
+# The revenue model was trained with these two regressors; passing the unified ne_seasonal_prior
+# would cause a schema mismatch at predict() time.
+_is_wknd_fwd = (future_features['ds'].dt.dayofweek >= 5).astype(int)  # 5=Sat, 6=Sun
+future_features['ne_prior_weekend'] = future_features['ne_seasonal_prior'] * _is_wknd_fwd
+future_features['ne_prior_weekday'] = future_features['ne_seasonal_prior'] * (1 - _is_wknd_fwd)
+
 print(f"✓ Forward feature rows: {len(future_features)}")
 print(f"  Date range: {future_features['ds'].min().date()} → {future_features['ds'].max().date()}")
 print(f"  Seasonal prior range: {future_features['ne_seasonal_prior'].min():.3f} → {future_features['ne_seasonal_prior'].max():.3f} (cap={_SEASONAL_PRIOR_CAP})")
@@ -321,7 +329,7 @@ print(f"  Future closures in window: {future_features['likely_future_closure'].s
 
 # ── 9. GENERATE REVENUE FORECAST ──────────────────────────────────────────────
 
-revenue_input    = future_features[['ds', 'ne_seasonal_prior',
+revenue_input    = future_features[['ds', 'ne_prior_weekday', 'ne_prior_weekend',
                                      'is_bread_delivery_day',
                                      'weather_high_f', 'total_precip_in']].copy()
 revenue_forecast = revenue_model.predict(revenue_input)
@@ -337,6 +345,81 @@ print(f"  {'-'*52}")
 for _, row in revenue_preds.head(7).iterrows():
     day_name = row['ds'].strftime('%A')
     print(f"  {str(row['ds'].date()):<12} {day_name:<10} "
+          f"${row['yhat']:>9,.0f} ${row['yhat_lower']:>9,.0f} ${row['yhat_upper']:>9,.0f}")
+
+# COMMAND ----------
+
+# ── 9b. ROLLING DOW BLEND ──────────────────────────────────────────────────────
+# Blends the Prophet output with an exponentially-weighted rolling day-of-week mean.
+# Short-horizon forecasts (days 1-7) anchor 50% to recent actuals per DOW; this
+# self-corrects the Prophet baseline to the current revenue level without retraining.
+# Days 8-14 taper to 25% rolling / 75% Prophet. Days 15-30 are Prophet-only.
+#
+# Lambda=0.75: weight decay per occurrence. Last week = 1.0, 2 weeks ago = 0.75, etc.
+# Using last 6 occurrences per DOW (6 weeks of history for each day of week).
+
+_BLEND_LAMBDA = 0.75
+_DOW_LOOKBACK_WEEKS = 6
+
+_actuals_dow = spark.sql(f"""
+    SELECT
+        business_date,
+        dayofweek(business_date) AS dow_num,
+        net_revenue
+    FROM {ACTUALS_TABLE}
+    WHERE net_revenue > 0
+      AND business_date >= date_sub(current_date(), {_DOW_LOOKBACK_WEEKS * 7})
+    ORDER BY business_date
+""").toPandas()
+
+_rolling_dow = {}
+for _dow in range(1, 8):
+    _rows = _actuals_dow[_actuals_dow['dow_num'] == _dow].sort_values('business_date')
+    if len(_rows) == 0:
+        continue
+    _n = len(_rows)
+    _w = np.array([_BLEND_LAMBDA ** (_n - 1 - i) for i in range(_n)])
+    _w /= _w.sum()
+    _rolling_dow[_dow] = float(np.dot(_rows['net_revenue'].values, _w))
+
+_DOW_NAMES = {1: 'Sun', 2: 'Mon', 3: 'Tue', 4: 'Wed', 5: 'Thu', 6: 'Fri', 7: 'Sat'}
+print(f"Rolling DOW means (exp-weighted λ={_BLEND_LAMBDA}, last {_DOW_LOOKBACK_WEEKS} weeks):")
+for _d, _v in sorted(_rolling_dow.items()):
+    print(f"  {_DOW_NAMES[_d]}: ${_v:,.0f}")
+
+# Spark dayofweek: 1=Sun, 2=Mon, ..., 7=Sat
+# pandas dayofweek: 0=Mon, ..., 6=Sun  →  map to Spark convention
+_pd_to_spark = {0: 2, 1: 3, 2: 4, 3: 5, 4: 6, 5: 7, 6: 1}
+revenue_preds['_dow_num'] = revenue_preds['ds'].dt.dayofweek.map(_pd_to_spark)
+revenue_preds['_horizon'] = (revenue_preds['ds'].dt.date.apply(
+    lambda d: (d - TODAY).days
+))
+
+def _apply_blend(row):
+    horizon  = row['_horizon']
+    dow_mean = _rolling_dow.get(row['_dow_num'], row['yhat'])
+    w_roll   = 0.5 if horizon <= 7 else (0.25 if horizon <= 14 else 0.0)
+    if w_roll == 0.0:
+        return row['yhat'], row['yhat_lower'], row['yhat_upper']
+    blended = w_roll * dow_mean + (1.0 - w_roll) * row['yhat']
+    scale   = blended / row['yhat'] if row['yhat'] > 0 else 1.0
+    return blended, row['yhat_lower'] * scale, row['yhat_upper'] * scale
+
+_blended = revenue_preds.apply(
+    lambda r: pd.Series(_apply_blend(r), index=['yhat', 'yhat_lower', 'yhat_upper']),
+    axis=1
+)
+revenue_preds[['yhat', 'yhat_lower', 'yhat_upper']] = _blended
+revenue_preds['yhat']       = revenue_preds['yhat'].clip(0).round(2)
+revenue_preds['yhat_lower'] = revenue_preds['yhat_lower'].clip(0).round(2)
+revenue_preds['yhat_upper'] = revenue_preds['yhat_upper'].clip(0).round(2)
+revenue_preds.drop(columns=['_dow_num', '_horizon'], inplace=True)
+
+print(f"\n  Blended forecast (next 7 days — 50% rolling DOW + 50% Prophet):")
+print(f"  {'Date':<12} {'Day':<10} {'Blended':>10} {'Lower':>10} {'Upper':>10}")
+print(f"  {'-'*52}")
+for _, row in revenue_preds.head(7).iterrows():
+    print(f"  {str(row['ds'].date()):<12} {row['ds'].strftime('%A'):<10} "
           f"${row['yhat']:>9,.0f} ${row['yhat_lower']:>9,.0f} ${row['yhat_upper']:>9,.0f}")
 
 # COMMAND ----------

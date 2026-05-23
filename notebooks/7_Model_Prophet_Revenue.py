@@ -55,6 +55,7 @@
 # MAGIC
 # MAGIC | Version | Date | Author | Change |
 # MAGIC |---|---|---|---|
+# MAGIC | v7 | 2026-05-23 | JS | Split ne_seasonal_prior into ne_prior_weekday + ne_prior_weekend. Diagnosed +40-65% weekday over-forecast: uniform additive prior added ~$500/day equally across all DOWs while only weekends see tourist uplift. Separate regressors let model learn near-zero weekday coefficient. Added Memorial Day / July 4 / Labor Day as COASTAL_HOLIDAY events. Added rolling DOW blending in NB9 (50/50 for days 1-7, 25/75 for days 8-14). |
 # MAGIC | v6 | 2026-04-29 | JS | ne_seasonal_prior mode: multiplicative→additive. Multiplicative compounded the weekly peak with summer index (May Fri $3k+); additive adds a fixed $/day seasonal bonus instead. prior_scale restored to 5.0 — regularization doesn't help when data is strongly informative. |
 | v5 | 2026-04-28 | JS | Smooth seasonal prior: interpolate between month midpoints (15th) instead of step-function per month. Eliminates hard Apr→May forecast jump. |
 | v4 | 2026-04-19 | JS | Summer seasonality: switched from Fourier add_seasonality to ne_seasonal_prior multiplicative regressor. Added Dec-Feb→Mar-Apr backtest. |
@@ -187,6 +188,14 @@ SPECIAL_EVENTS = {
     '2025-12-13': ('Town Stroll',         'PLANNED_EVENT',      -1, 0),
     '2026-03-02': ('Wine Tasting',        'REVENUE_DISTORTION',  0, 0),
     '2025-12-11': ('Dec event / unknown', 'ORGANIC_EVENT',       0, 0),
+    # Coastal summer holidays — high-traffic days for Cohasset (beach town).
+    # lower_window=-1 captures the eve (e.g. Sunday before Memorial Day, July 3).
+    '2026-05-25': ('Memorial Day',        'COASTAL_HOLIDAY',    -1, 0),
+    '2026-07-04': ('Independence Day',    'COASTAL_HOLIDAY',    -1, 1),
+    '2026-09-07': ('Labor Day',           'COASTAL_HOLIDAY',    -1, 0),
+    '2027-05-31': ('Memorial Day',        'COASTAL_HOLIDAY',    -1, 0),
+    '2027-07-04': ('Independence Day',    'COASTAL_HOLIDAY',    -1, 1),
+    '2027-09-06': ('Labor Day',           'COASTAL_HOLIDAY',    -1, 0),
 }
 
 FUTURE_CLOSURES = {
@@ -300,6 +309,16 @@ all_historical['ne_seasonal_prior'] = prior_seasonality(all_historical['ds']).va
 future_df['ne_seasonal_prior']      = prior_seasonality(future_df['ds']).values
 train_df['ne_seasonal_prior']       = prior_seasonality(train_df['ds']).values
 
+# Split into weekend vs weekday components.
+# Weekday revenue shows no significant summer uplift (locals shop year-round at similar rates).
+# Weekend uplift IS real: coastal tourists arrive Fri-Sun from Memorial Day through Labor Day.
+# Separate regressors let Prophet learn near-zero weekday coefficient and a meaningful
+# weekend coefficient — preventing the ~$500/day uniform over-forecast on Mon-Thu observed in v6.
+for _df in [all_historical, future_df, train_df]:
+    _is_wknd = (_df['ds'].dt.dayofweek >= 5).astype(int)  # 5=Sat, 6=Sun
+    _df['ne_prior_weekend'] = (_df['ne_seasonal_prior'] * _is_wknd).values
+    _df['ne_prior_weekday'] = (_df['ne_seasonal_prior'] * (1 - _is_wknd)).values
+
 print("Prior seasonal index (smooth interpolation — 0.0 = annual average):")
 print("  Weekly midpoint values (Thursday of each ISO week):")
 for week, lin in PRIOR_WEEKLY_LINEARITY.items():
@@ -320,7 +339,7 @@ for ds_str in ['2026-04-28', '2026-04-30', '2026-05-01', '2026-05-03']:
 holiday_rows = []
 
 for date_str, (name, etype, lower_w, upper_w) in SPECIAL_EVENTS.items():
-    if etype == 'PLANNED_EVENT':
+    if etype in ('PLANNED_EVENT', 'COASTAL_HOLIDAY'):
         holiday_rows.append({
             'holiday':      name,
             'ds':           pd.Timestamp(date_str),
@@ -408,17 +427,16 @@ _bt_model = Prophet(
     daily_seasonality       = False,
     holidays                = holidays_df,
 )
-_bt_model.add_regressor('ne_seasonal_prior',     mode='additive', prior_scale=5.0)
-_bt_model.add_regressor('is_bread_delivery_day', mode='multiplicative')
-_bt_model.add_regressor('weather_high_f',         mode='additive')
-_bt_model.add_regressor('total_precip_in',        mode='additive')
+_bt_model.add_regressor('ne_prior_weekday',       mode='additive', prior_scale=2.0)
+_bt_model.add_regressor('ne_prior_weekend',       mode='additive', prior_scale=5.0)
+_bt_model.add_regressor('is_bread_delivery_day',  mode='multiplicative')
+_bt_model.add_regressor('weather_high_f',          mode='additive')
+_bt_model.add_regressor('total_precip_in',         mode='additive')
 
-# Add prior seasonal index to backtest sets
-bt_train['ne_seasonal_prior'] = prior_seasonality(bt_train['ds']).values
-bt_test['ne_seasonal_prior']  = prior_seasonality(bt_test['ds']).values
+# ne_prior_weekday/weekend already computed in cell 6 and inherited via .copy()
 
 _bt_fit = bt_train[['ds', 'y_revenue', 'cap', 'floor',
-                     'ne_seasonal_prior',
+                     'ne_prior_weekday', 'ne_prior_weekend',
                      'is_bread_delivery_day', 'weather_high_f', 'total_precip_in']].rename(
     columns={'y_revenue': 'y'}
 ).dropna(subset=['ds', 'y'])
@@ -427,10 +445,10 @@ for _col in ['weather_high_f', 'total_precip_in']:
 _bt_fit['is_bread_delivery_day'] = _bt_fit['is_bread_delivery_day'].fillna(False).astype(int)
 
 _bt_model.fit(_bt_fit[['ds', 'y', 'cap', 'floor',
-                        'ne_seasonal_prior',
+                        'ne_prior_weekday', 'ne_prior_weekend',
                         'is_bread_delivery_day', 'weather_high_f', 'total_precip_in']])
 
-_bt_pred_in = bt_test[['ds', 'ne_seasonal_prior',
+_bt_pred_in = bt_test[['ds', 'ne_prior_weekday', 'ne_prior_weekend',
                         'is_bread_delivery_day', 'weather_high_f', 'total_precip_in']].copy()
 for _col in ['weather_high_f', 'total_precip_in']:
     _bt_pred_in[_col] = _bt_pred_in[_col].fillna(bt_train[_col].median())
@@ -473,7 +491,7 @@ for _, _row in _bt_eval.sort_values('ds').iterrows():
 
 # ── 10. TRAIN PROPHET MODEL ───────────────────────────────────────────────────
 
-with mlflow.start_run(run_name="prophet_revenue_v6_additive_seasonal_prior") as run:
+with mlflow.start_run(run_name="prophet_revenue_v7_split_seasonal_prior") as run:
 
     run_id = run.info.run_id
     print(f"MLflow run started: {run_id}")
@@ -506,21 +524,18 @@ with mlflow.start_run(run_name="prophet_revenue_v6_additive_seasonal_prior") as 
         holidays                = holidays_df,
     )
 
-    # ne_seasonal_prior: the prior store's monthly seasonal index used as a regressor.
-    # mode='additive': the coefficient is learned in $/day units, not as a fraction of
-    # trend. This prevents multiplicative compounding where a high-revenue Friday gets
-    # BOTH the Friday weekly boost AND a 21% summer percentage multiplier, which was
-    # projecting May Fridays at $3,000+ while April Fridays were running $2,000-2,500.
-    # In additive mode the seasonal effect is a flat $/day bonus that doesn't scale with
-    # the day's base level — slow Mondays stay slow, busy Saturdays get the same bonus.
-    model.add_regressor('ne_seasonal_prior',      mode='additive', prior_scale=5.0)
-    model.add_regressor('is_bread_delivery_day',  mode='multiplicative')
-    model.add_regressor('weather_high_f',          mode='additive')
-    model.add_regressor('total_precip_in',         mode='additive')
+    # Split seasonal prior: weekend and weekday get separate learned coefficients.
+    # Prior_scale=2.0 for weekday (strong skepticism — expected near-zero, locals shop flat year-round).
+    # Prior_scale=5.0 for weekend (permissive — tourist uplift on Sat/Sun is real and substantial).
+    model.add_regressor('ne_prior_weekday',        mode='additive', prior_scale=2.0)
+    model.add_regressor('ne_prior_weekend',        mode='additive', prior_scale=5.0)
+    model.add_regressor('is_bread_delivery_day',   mode='multiplicative')
+    model.add_regressor('weather_high_f',           mode='additive')
+    model.add_regressor('total_precip_in',          mode='additive')
 
     # ── Prepare fit dataframe ─────────────────────────────────────────────────
     fit_df = train_df[['ds', 'y_revenue', 'cap', 'floor',
-                        'ne_seasonal_prior',
+                        'ne_prior_weekday', 'ne_prior_weekend',
                         'is_bread_delivery_day',
                         'weather_high_f',
                         'total_precip_in']].rename(
@@ -533,7 +548,7 @@ with mlflow.start_run(run_name="prophet_revenue_v6_additive_seasonal_prior") as 
 
     print("Fitting Prophet model...")
     model.fit(fit_df[['ds', 'y', 'cap', 'floor',
-                       'ne_seasonal_prior',
+                       'ne_prior_weekday', 'ne_prior_weekend',
                        'is_bread_delivery_day',
                        'weather_high_f', 'total_precip_in']])
     print("✓ Model fitted")
@@ -541,10 +556,10 @@ with mlflow.start_run(run_name="prophet_revenue_v6_additive_seasonal_prior") as 
     # ── Build forecast input ──────────────────────────────────────────────────
     # Combine ALL historical dates (not just training) plus future dates
     # so the chart shows how the model fits the full history
-    hist_input = all_historical[['ds', 'ne_seasonal_prior',
+    hist_input = all_historical[['ds', 'ne_prior_weekday', 'ne_prior_weekend',
                                   'is_bread_delivery_day',
                                   'weather_high_f', 'total_precip_in']].copy()
-    fwd_input  = future_df[['ds', 'ne_seasonal_prior',
+    fwd_input  = future_df[['ds', 'ne_prior_weekday', 'ne_prior_weekend',
                               'is_bread_delivery_day',
                               'weather_high_f', 'total_precip_in']].copy()
 
@@ -633,27 +648,25 @@ with mlflow.start_run(run_name="prophet_revenue_v6_additive_seasonal_prior") as 
     # ── Log model ─────────────────────────────────────────────────────────────
     # Unity Catalog requires a model signature (input + output schema).
     signature = infer_signature(
-        forecast_input[['ds', 'cap', 'floor', 'ne_seasonal_prior',
+        forecast_input[['ds', 'cap', 'floor', 'ne_prior_weekday', 'ne_prior_weekend',
                          'is_bread_delivery_day',
                          'weather_high_f', 'total_precip_in']],
         forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']],
     )
+    # Log model artifact first (no registration yet) so we can capture the version.
+    # Separating log + register avoids Unity Catalog search_model_versions limitations.
     mlflow.prophet.log_model(
-        pr_model              = model,
-        artifact_path         = "prophet_revenue_model",
-        registered_model_name = MODEL_NAME,
-        signature             = signature,
+        pr_model      = model,
+        artifact_path = "prophet_revenue_model",
+        signature     = signature,
     )
 
-    # Immediately promote the new version to @production so notebook 9 picks it up
-    _reg_client  = mlflow.tracking.MlflowClient()
-    _new_versions = _reg_client.search_model_versions(
-        f"name='{MODEL_NAME}'", order_by=["version_number DESC"], max_results=1
-    )
-    if _new_versions:
-        _new_ver = _new_versions[0].version
-        _reg_client.set_registered_model_alias(MODEL_NAME, "production", _new_ver)
-        print(f"  ✓ Promoted v{_new_ver} → @production alias")
+    # Register separately — mlflow.register_model returns the ModelVersion object
+    # directly, giving us the version number without needing search_model_versions.
+    _reg_client = mlflow.tracking.MlflowClient()
+    _mv = mlflow.register_model(f"runs:/{run_id}/prophet_revenue_model", MODEL_NAME)
+    _reg_client.set_registered_model_alias(MODEL_NAME, "production", _mv.version)
+    print(f"  ✓ Registered v{_mv.version} and promoted → @production alias")
 
     print(f"\n✓ Model logged and registered")
     print(f"  Run ID:     {run_id}")
