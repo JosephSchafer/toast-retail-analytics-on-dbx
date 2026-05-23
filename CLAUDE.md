@@ -17,6 +17,12 @@ MSYS_NO_PATHCONV=1 databricks workspace import "/Workspace/Shared/Sales & Weathe
 ```
 Notebooks live in `/Workspace/Shared/Sales & Weather Repo/`. Local path is `notebooks/`.
 
+> **CRITICAL — Two-path rule:**
+> - `/Workspace/Shared/Sales & Weather Repo/` — the **only** path Claude may write to via `workspace import`. Use this for testing uploaded notebooks before they go to production.
+> - `/Repos/joe@threesistersprovisions.com/3sp-analytics/` — **NEVER touch this path directly.** It is exclusively managed by GitHub Actions on push. Writing here creates local git edits that silently block all future GitHub→Repos syncs, causing the daily job to run stale code.
+>
+> **After every `git push`, verify the Repos synced:** check that `GET /api/2.0/repos/4188838463787122` returns the expected `head_commit_id`. If it doesn't, the sync failed and must be investigated before any further notebook changes.
+
 ## Main Pipeline
 **Job ID:** `601248779031413` — "Daily Sales Ingestion & Transformation"
 **Task order:** NB1 (Toast ingest) → NB2 (weather) → NB4 (Gold sales) → NB6 (features) → NB9 (forecast) → NB10 (health check)
@@ -25,8 +31,7 @@ Notebooks live in `/Workspace/Shared/Sales & Weather Repo/`. Local path is `note
 
 ### Notebook Paths
 The daily job runs notebooks from the Git Repos path (synced via GitHub Actions on push):
-`/Repos/joe@threesistersprovisions.com/3sp-analytics/notebooks/`
-NB10 is at `/Shared/Sales & Weather Repo/10_Pipeline_Health_Check` (uploaded directly; move to Repos path after first git push of that file).
+`/Repos/joe@threesistersprovisions.com/3sp-analytics/notebooks/` (Repos ID: `4188838463787122`)
 NB7/NB8 (retrain — not in the daily job) live at `/Shared/Sales & Weather Repo/` and are run manually or via temp jobs.
 
 ## Key Tables
