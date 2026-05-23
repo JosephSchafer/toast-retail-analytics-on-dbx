@@ -11,7 +11,7 @@ jobs:
       - name: Pull latest commits into Databricks Repo
         run: |
           curl -sf -X PATCH \
-            "${{ secrets.DATABRICKS_HOST }}/api/2.0/repos/1826259645163187" \
+            "${{ secrets.DATABRICKS_HOST }}/api/2.0/repos/4188838463787122" \
             -H "Authorization: Bearer ${{ secrets.DATABRICKS_TOKEN }}" \
             -H "Content-Type: application/json" \
             -d '{"branch": "master"}' \
