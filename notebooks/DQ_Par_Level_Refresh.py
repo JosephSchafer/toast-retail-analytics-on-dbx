@@ -15,6 +15,7 @@
 # MAGIC | Version | Date       | Description |
 # MAGIC |---------|------------|-------------|
 # MAGIC | v1      | 2026-05-24 | Initial daily refresh. Previous table was a static CTAS from 2026-04-13; stale for 6 weeks. |
+# MAGIC | v2      | 2026-05-24 | Add "not tracked" detection: items with blank catalog inventory_quantity and no RECEIVE events in 90 days get qty_on_hand=NULL, inventory_status="not tracked". Prevents absurd negative quantities for items like Kneady Mama bread that stopped inventory tracking. |
 
 # COMMAND ----------
 
@@ -43,6 +44,18 @@ last_inventory AS (
             ROW_NUMBER() OVER (PARTITION BY item_version_id ORDER BY created_date DESC) AS rn
         FROM {CATALOG}.bronze.toast_inventory_history_raw
     ) WHERE rn = 1
+),
+
+-- Most recent RECEIVE event per item — used to detect "not tracked" items.
+-- An item is considered not tracked if Toast marks it as unquantified
+-- (inventory_quantity blank in item_catalog) AND it has had no RECEIVE event
+-- in the last 90 days. This catches items like Kneady Mama bread that were
+-- briefly tracked then removed from inventory management without a final count.
+last_receive AS (
+    SELECT item_version_id, MAX(created_date) AS last_receive_date
+    FROM {CATALOG}.bronze.toast_inventory_history_raw
+    WHERE adjustment_type = 'RECEIVE'
+    GROUP BY item_version_id
 ),
 
 -- Units sold since the last inventory event (deplete from last known qty)
@@ -88,12 +101,19 @@ computed AS (
         ic.category_group,
         ic.category,
         ic.supplier,
-        -- Estimated qty on hand: last bronze event qty minus sales since that event.
-        -- Falls back to item_catalog inventory_quantity for items with no bronze history.
-        COALESCE(
-            li.last_known_qty - COALESCE(ss.units_sold_since_last_inv, 0),
-            CAST(NULLIF(TRIM(ic.inventory_quantity), '') AS DOUBLE)
-        ) AS qty_on_hand,
+        -- "Not tracked" items: Toast marks these with a blank inventory_quantity
+        -- AND they have had no RECEIVE event in 90 days. Set qty to NULL so the
+        -- dashboard shows them as not tracked rather than wildly negative.
+        CASE
+            WHEN TRIM(COALESCE(ic.inventory_quantity, '')) = ''
+             AND (lr.last_receive_date IS NULL
+                  OR DATEDIFF(CURRENT_DATE(), CAST(lr.last_receive_date AS DATE)) > 90)
+            THEN NULL
+            ELSE COALESCE(
+                li.last_known_qty - COALESCE(ss.units_sold_since_last_inv, 0),
+                CAST(NULLIF(TRIM(ic.inventory_quantity), '') AS DOUBLE)
+            )
+        END AS qty_on_hand,
         COALESCE(s60.avg_daily_units_60d, 0.0) AS avg_daily_units_60d,
         COALESCE(s60.selling_days_60d, 0)      AS selling_days_60d,
         COALESCE(s60.last_sold_date, atls.last_sold_date_alltime) AS last_sold_date,
@@ -114,6 +134,7 @@ computed AS (
         END AS par_max
     FROM {CATALOG}.reference.item_catalog ic
     LEFT JOIN last_inventory li       ON ic.item_id = li.item_version_id
+    LEFT JOIN last_receive lr         ON ic.item_id = lr.item_version_id
     LEFT JOIN sales_since_inv ss      ON ic.item_id = ss.item_guid
     LEFT JOIN sales_60d s60           ON ic.item_id = s60.item_guid
     LEFT JOIN all_time_last_sale atls ON ic.item_id = atls.item_guid
@@ -129,7 +150,7 @@ SELECT
     supplier,
     qty_on_hand,
     CASE
-        WHEN qty_on_hand IS NULL THEN 'unknown'
+        WHEN qty_on_hand IS NULL THEN 'not tracked'
         WHEN qty_on_hand > 0    THEN 'in stock'
         ELSE 'out of stock'
     END AS inventory_status,
@@ -157,7 +178,7 @@ SELECT
     COUNT(*)                                                            AS total_items,
     SUM(CASE WHEN inventory_status = 'out of stock' THEN 1 ELSE 0 END) AS out_of_stock,
     SUM(CASE WHEN inventory_status = 'in stock'     THEN 1 ELSE 0 END) AS in_stock,
-    SUM(CASE WHEN inventory_status = 'unknown'      THEN 1 ELSE 0 END) AS unknown_status,
+    SUM(CASE WHEN inventory_status = 'not tracked'  THEN 1 ELSE 0 END) AS not_tracked,
     SUM(CASE WHEN par_min != ''                     THEN 1 ELSE 0 END) AS items_with_par,
     SUM(CASE WHEN avg_daily_units_60d > 0           THEN 1 ELSE 0 END) AS items_with_velocity,
     MAX(last_sold_date)                                                 AS latest_sale_date
@@ -167,7 +188,7 @@ FROM {CATALOG}.dq.par_level_suggestions
 print(f"Total active items  : {summary['total_items']}")
 print(f"  In stock          : {summary['in_stock']}")
 print(f"  Out of stock      : {summary['out_of_stock']}")
-print(f"  Unknown status    : {summary['unknown_status']}")
+print(f"  Not tracked       : {summary['not_tracked']}")
 print(f"Items with par set  : {summary['items_with_par']}")
 print(f"Items with velocity : {summary['items_with_velocity']}")
 print(f"Latest sale date    : {summary['latest_sale_date']}")
