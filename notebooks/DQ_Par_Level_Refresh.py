@@ -16,6 +16,7 @@
 # MAGIC |---------|------------|-------------|
 # MAGIC | v1      | 2026-05-24 | Initial daily refresh. Previous table was a static CTAS from 2026-04-13; stale for 6 weeks. |
 # MAGIC | v2      | 2026-05-24 | Add "not tracked" detection: items with blank catalog inventory_quantity and no RECEIVE events in 90 days get qty_on_hand=NULL, inventory_status="not tracked". Prevents absurd negative quantities for items like Kneady Mama bread that stopped inventory tracking. |
+# MAGIC | v3      | 2026-06-07 | Add _refreshed_at timestamp column for pipeline freshness monitoring on dashboards. |
 
 # COMMAND ----------
 
@@ -160,7 +161,8 @@ SELECT
     receiving_units,
     receiving_unit_quantities,
     par_min,
-    par_max
+    par_max,
+    CURRENT_TIMESTAMP() AS _refreshed_at
 FROM computed
 """)
 
@@ -181,7 +183,8 @@ SELECT
     SUM(CASE WHEN inventory_status = 'not tracked'  THEN 1 ELSE 0 END) AS not_tracked,
     SUM(CASE WHEN par_min != ''                     THEN 1 ELSE 0 END) AS items_with_par,
     SUM(CASE WHEN avg_daily_units_60d > 0           THEN 1 ELSE 0 END) AS items_with_velocity,
-    MAX(last_sold_date)                                                 AS latest_sale_date
+    MAX(last_sold_date)                                                 AS latest_sale_date,
+    MAX(_refreshed_at)                                                  AS refreshed_at
 FROM {CATALOG}.dq.par_level_suggestions
 """).collect()[0]
 
@@ -192,6 +195,7 @@ print(f"  Not tracked       : {summary['not_tracked']}")
 print(f"Items with par set  : {summary['items_with_par']}")
 print(f"Items with velocity : {summary['items_with_velocity']}")
 print(f"Latest sale date    : {summary['latest_sale_date']}")
+print(f"Table refreshed at  : {summary['refreshed_at']}")
 
 assert summary['total_items'] > 0, "FAIL: par_level_suggestions is empty"
 assert summary['latest_sale_date'] is not None, "FAIL: no sales data found"
