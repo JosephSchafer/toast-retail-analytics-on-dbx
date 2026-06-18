@@ -52,6 +52,7 @@
 # MAGIC |---|---|---|---|
 # MAGIC | v1 | 2026-03-28 | JS | Initial build — wrote to daily_sales_summary |
 # MAGIC | v3 | 2026-05-23 | JS | Split ne_seasonal_prior into ne_prior_weekday/weekend to match NB7 v7. Added exponentially-weighted rolling DOW blend (λ=0.75): 50/50 blend for days 1-7, 25/75 for days 8-14, Prophet-only for days 15-30. |
+# MAGIC | v4 | 2026-06-18 | JS | Horizon-based bias correction (step 9c). Realized accuracy analysis (n=1,409 pairs) showed consistent over-forecasting of +$161–$362/day across all horizons even after DOW blend. Correction subtracted post-blend. |
 | v2 | 2026-03-31 | JS | Retargeted to gold.daily_sales_forecast to prevent duplication |
 
 # COMMAND ----------
@@ -417,6 +418,51 @@ revenue_preds.drop(columns=['_dow_num', '_horizon'], inplace=True)
 
 print(f"\n  Blended forecast (next 7 days — 50% rolling DOW + 50% Prophet):")
 print(f"  {'Date':<12} {'Day':<10} {'Blended':>10} {'Lower':>10} {'Upper':>10}")
+print(f"  {'-'*52}")
+for _, row in revenue_preds.head(7).iterrows():
+    print(f"  {str(row['ds'].date()):<12} {row['ds'].strftime('%A'):<10} "
+          f"${row['yhat']:>9,.0f} ${row['yhat_lower']:>9,.0f} ${row['yhat_upper']:>9,.0f}")
+
+# COMMAND ----------
+
+# ── 9c. BIAS CORRECTION ───────────────────────────────────────────────────────
+# Realized accuracy analysis (n=1,409 forecast-vs-actual pairs from gold.daily_sales_forecast
+# vs gold.daily_sales_summary) showed consistent over-forecasting at every horizon,
+# even after the rolling DOW blend in step 9b. The amounts below are the RESIDUAL bias
+# remaining after the blend — subtract them to center the forecast distribution.
+#
+# Horizon  | Observed bias | n
+# 1–3 days |        +$161  | 204
+# 4–7 days |        +$207  | 247
+# 8–14 days|        +$246  | 358
+# 15–21 days|       +$292  | 294
+# 22–30 days|       +$362  | 306
+
+_HORIZON_BIAS = [
+    (3,  160.0),
+    (7,  200.0),
+    (14, 245.0),
+    (21, 290.0),
+    (30, 360.0),
+]
+
+def _get_bias(horizon_days: int) -> float:
+    for cutoff, bias in _HORIZON_BIAS:
+        if horizon_days <= cutoff:
+            return bias
+    return _HORIZON_BIAS[-1][1]
+
+revenue_preds['_horizon_tmp'] = revenue_preds['ds'].dt.date.apply(lambda d: (d - TODAY).days)
+revenue_preds['_bias_tmp']    = revenue_preds['_horizon_tmp'].apply(_get_bias)
+
+revenue_preds['yhat']       = (revenue_preds['yhat']       - revenue_preds['_bias_tmp']).clip(0).round(2)
+revenue_preds['yhat_lower'] = (revenue_preds['yhat_lower'] - revenue_preds['_bias_tmp']).clip(0).round(2)
+revenue_preds['yhat_upper'] = (revenue_preds['yhat_upper'] - revenue_preds['_bias_tmp']).clip(0).round(2)
+revenue_preds.drop(columns=['_horizon_tmp', '_bias_tmp'], inplace=True)
+
+print(f"✓ Horizon-based bias correction applied ($160 at 1–3d → $360 at 22–30d)")
+print(f"  Bias-corrected forecast (next 7 days):")
+print(f"  {'Date':<12} {'Day':<10} {'Revenue':>10} {'Lower':>10} {'Upper':>10}")
 print(f"  {'-'*52}")
 for _, row in revenue_preds.head(7).iterrows():
     print(f"  {str(row['ds'].date()):<12} {row['ds'].strftime('%A'):<10} "
