@@ -524,7 +524,7 @@ for _dow in range(1, 8):
     _is_wknd   = _dow in _WEEKEND_DOWS
     _lookback  = _DOW_LOOKBACK_WEEKEND if _is_wknd else _DOW_LOOKBACK_WEEKDAY
     _min_obs   = _MIN_OBS_WEEKEND if _is_wknd else _MIN_OBS_WEEKDAY
-    _cutoff    = pd.Timestamp.now(tz='UTC').normalize() - pd.Timedelta(days=_lookback)
+    _cutoff    = pd.Timestamp.now().normalize() - pd.Timedelta(days=_lookback)
     _subset    = _recent[
         (_recent['dow'] == _dow) &
         (_recent['business_date'] >= _cutoff)
