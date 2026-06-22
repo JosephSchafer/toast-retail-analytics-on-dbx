@@ -57,6 +57,9 @@
 # MAGIC |---|---|---|---|
 # MAGIC | v7 | 2026-05-23 | JS | Split ne_seasonal_prior into ne_prior_weekday + ne_prior_weekend. Diagnosed +40-65% weekday over-forecast: uniform additive prior added ~$500/day equally across all DOWs while only weekends see tourist uplift. Separate regressors let model learn near-zero weekday coefficient. Added Memorial Day / July 4 / Labor Day as COASTAL_HOLIDAY events. Added rolling DOW blending in NB9 (50/50 for days 1-7, 25/75 for days 8-14). |
 # MAGIC | v6 | 2026-04-29 | JS | ne_seasonal_prior mode: multiplicative→additive. Multiplicative compounded the weekly peak with summer index (May Fri $3k+); additive adds a fixed $/day seasonal bonus instead. prior_scale restored to 5.0 — regularization doesn't help when data is strongly informative. |
+| v9 | 2026-06-22 | JS | TRAIN_START moved to Jan 1 2026 (was Sep 2025). Jan–Mar shoulder season was anchoring Fri/Sat/Sun baselines too low. With 6 months of Jan–Jun data, dropping winter gives Prophet a cleaner ramp signal. Also raised ne_prior_weekend prior_scale 5→8 to allow stronger tourist-weekend coefficient without over-regularization. |
+| v8 | 2026-06-22 | JS | Switch growth flat→linear, changepoint_prior_scale 0.05→0.15. Flat growth was architecturally incapable of following the Jan–Jun ramp; realized under-forecast ~+$470/day avg Jun 2026. Linear+flexible changepoints lets trend detect real inflections without logistic blowup. Revisit changepoint scale in Jan 2027 with full clean year. |
+| v6 | 2026-06-22 | JS | Replace TRAIN_START=Dec 2025 hard cutoff with EXCLUDE_PERIODS list. Excludes Sep–Dec 2025 (ramp-up: no liquor license, no advertising) while preserving future Decembers for seasonality. TRAIN_START moved back to Sep 1 2025 to be a no-op anchor. |
 | v5 | 2026-04-28 | JS | Smooth seasonal prior: interpolate between month midpoints (15th) instead of step-function per month. Eliminates hard Apr→May forecast jump. |
 | v4 | 2026-04-19 | JS | Summer seasonality: switched from Fourier add_seasonality to ne_seasonal_prior multiplicative regressor. Added Dec-Feb→Mar-Apr backtest. |
 # MAGIC | v3 | 2026-04-19 | JS | Switched to flat growth — logistic S-curve projected 2-3x actuals for summer. seasonality_prior_scale 5→2, yearly prior_scale 3→1 |
@@ -117,9 +120,33 @@ MODEL_NAME      = "toast_revenue_prophet"
 
 FORECAST_DAYS   = 30
 
-# Training start: Dec 1 2025
-# Excludes Sep-Oct ramp-up (no liquor license, no advertising)
-TRAIN_START = pd.Timestamp('2025-12-01')
+# Training start: Jan 1 2026 — see rationale below.
+#
+# We have three eras of data:
+#   Sep–Dec 2025: ramp-up (no liquor license, no advertising) — never representative
+#   Jan–Mar 2026: functional store but deep shoulder season — valid but see below
+#   Apr–Jun+ 2026: the store at scale in its seasonal ramp — most relevant
+#
+# As of Jun 2026, using Jan–Mar data to predict Jul is actively harmful: those months
+# anchor weekly seasonality at winter/shoulder-season levels, pulling Fri/Sat/Sun
+# baselines down toward $1,800–2,200 when reality is $2,800–3,400+. By trimming to
+# Jan 1 2026 we keep 6 months of clean data (Jan–Jun), drop the non-representative
+# ramp-up, and let Prophet's linear trend detect the genuine spring–summer ramp.
+#
+# Future Januarys and Februarys will eventually provide their own training signal as
+# we accumulate a full year of data. Revisit TRAIN_START after Dec 2026 closes.
+TRAIN_START = pd.Timestamp('2026-01-01')
+
+# Date ranges to exclude from training entirely.
+# Sep–Dec 2025 was a non-representative ramp-up period: no liquor license, no
+# advertising, and highly irregular seasonal patterns that will never recur.
+# We exclude those specific calendar months rather than setting a rolling lookback
+# so that future Decembers (2026+) are retained for seasonality learning.
+# (TRAIN_START=Jan 1 2026 already excludes Sep–Dec 2025 implicitly, but we keep
+# the explicit list so the EXCLUDE_PERIODS pattern works correctly for future use.)
+EXCLUDE_PERIODS = [
+    (pd.Timestamp('2025-09-01'), pd.Timestamp('2025-12-31')),
+]
 
 # Daily revenue cap for logistic growth
 # Prior store peak ~$9,300/day. We set cap at ~25% above that.
@@ -166,19 +193,25 @@ _wk_total = sum(_weekly_sums.values())
 PRIOR_WEEKLY_LINEARITY = {w: _weekly_sums[w] / _wk_total for w in sorted(_weekly_sums)}
 
 # ── Prophet hyperparameters ────────────────────────────────────────────────────
-# growth='flat': the store has been at a stable plateau since Dec 2025.
-# With only 5 months of data, logistic growth was interpreting the natural
-# winter→spring seasonal uptick as ongoing exponential S-curve growth,
-# then projecting 2-3x actual revenue for summer. Flat growth makes the
-# trend a constant baseline; weekly seasonality and the yearly prior
-# handle the rest.
+# growth='linear': allows Prophet to fit a real trend through the Jan–Jun data.
+# Previously 'flat' because logistic was over-projecting (2-3x summer) with only
+# 4 months of data. Now at 5.75 months of clean data the summer ramp is visible
+# and flat growth cannot follow it — realized under-forecast was ~+$470/day avg
+# in Jun 2026. Linear avoids logistic's exponential blowup while letting the
+# trend detect real inflections.
+#
+# changepoint_prior_scale=0.15: more flexible than default (0.05) so Prophet can
+# detect the Jan→Jun ramp as a real trend changepoint rather than seasonality noise.
+# Not so high that it overfits weekly wiggles as "trend."
+# Revisit in Jan 2027 with a full year of clean data — may want to dial back once
+# seasonal shape is fully learned and trend is expected to be flatter.
 PROPHET_PARAMS = {
-    "growth":                   "flat",       # plateau since Dec — no trend component
-    "changepoint_prior_scale":  0.05,         # kept for compatibility (unused with flat growth)
-    "seasonality_prior_scale":  2.0,          # reduced from 5.0 — weekly pattern is reliable
+    "growth":                   "linear",     # allows trend to follow the observed ramp
+    "changepoint_prior_scale":  0.15,         # flexible enough to detect Jun inflection
+    "seasonality_prior_scale":  2.0,          # weekly pattern is reliable, keep regularized
     "holidays_prior_scale":     10.0,         # events can have large effects
     "seasonality_mode":         "multiplicative",
-    "yearly_seasonality":       False,        # replaced by ne_seasonal_prior regressor
+    "yearly_seasonality":       False,        # insufficient clean data (<6 months); revisit Jan 2027
     "weekly_seasonality":       True,         # reliable from our own data
     "daily_seasonality":        False,
 }
@@ -228,10 +261,16 @@ features_df['ds'] = pd.to_datetime(features_df['ds'])
 all_historical = features_df[features_df['y_revenue'].notna()].copy()
 future_df      = features_df[features_df['y_revenue'].isna()].copy()
 
-# Training rows: from Dec 1 onward, not excluded, not imputed closure days
-# The Dec 1 cutoff removes the unrepresentative ramp-up period
+# Build an excluded-period mask from EXCLUDE_PERIODS.
+# This lets us drop specific calendar windows (e.g. the 2025 ramp-up) without
+# capping the overall lookback — future Decembers will train normally.
+_in_excluded_period = pd.Series(False, index=all_historical.index)
+for _start, _end in EXCLUDE_PERIODS:
+    _in_excluded_period |= (all_historical['ds'] >= _start) & (all_historical['ds'] <= _end)
+
 train_df = all_historical[
     (all_historical['ds'] >= TRAIN_START) &
+    (~_in_excluded_period) &
     (~all_historical['exclude_from_training']) &
     (all_historical['training_weight'] > 0.5)
 ].copy()
@@ -240,8 +279,10 @@ print(f"All historical rows:  {len(all_historical)}")
 print(f"Training rows (Dec+): {len(train_df)}")
 print(f"  Date range: {train_df['ds'].min().date()} → {train_df['ds'].max().date()}")
 print(f"Future rows:          {len(future_df)}")
-print(f"\nNote: {len(all_historical) - len(train_df)} pre-Dec rows excluded from training")
-print(f"(Sep-Oct ramp-up without liquor license or advertising)")
+_excluded_count = _in_excluded_period.sum()
+print(f"\nNote: {_excluded_count} rows excluded via EXCLUDE_PERIODS (Sep–Dec 2025 ramp-up)")
+print(f"  These months are non-representative and will never recur as an opening period.")
+print(f"  Future Decembers will train normally.")
 
 # COMMAND ----------
 
@@ -422,13 +463,13 @@ _bt_model = Prophet(
     seasonality_prior_scale = PROPHET_PARAMS["seasonality_prior_scale"],
     holidays_prior_scale    = PROPHET_PARAMS["holidays_prior_scale"],
     seasonality_mode        = PROPHET_PARAMS["seasonality_mode"],
-    yearly_seasonality      = False,
-    weekly_seasonality      = True,
-    daily_seasonality       = False,
+    yearly_seasonality      = PROPHET_PARAMS["yearly_seasonality"],
+    weekly_seasonality      = PROPHET_PARAMS["weekly_seasonality"],
+    daily_seasonality       = PROPHET_PARAMS["daily_seasonality"],
     holidays                = holidays_df,
 )
 _bt_model.add_regressor('ne_prior_weekday',       mode='additive', prior_scale=2.0)
-_bt_model.add_regressor('ne_prior_weekend',       mode='additive', prior_scale=5.0)
+_bt_model.add_regressor('ne_prior_weekend',       mode='additive', prior_scale=8.0)
 _bt_model.add_regressor('is_bread_delivery_day',  mode='multiplicative')
 _bt_model.add_regressor('weather_high_f',          mode='additive')
 _bt_model.add_regressor('total_precip_in',         mode='additive')
@@ -499,6 +540,7 @@ with mlflow.start_run(run_name="prophet_revenue_v7_split_seasonal_prior") as run
     # Log all configuration
     mlflow.log_params(PROPHET_PARAMS)
     mlflow.log_param("training_start",   str(TRAIN_START.date()))
+    mlflow.log_param("exclude_periods",  str([(str(s.date()), str(e.date())) for s, e in EXCLUDE_PERIODS]))
     mlflow.log_param("training_rows",    len(train_df))
     mlflow.log_param("revenue_cap",      REVENUE_CAP)
     mlflow.log_param("forecast_days",    FORECAST_DAYS)
@@ -528,7 +570,11 @@ with mlflow.start_run(run_name="prophet_revenue_v7_split_seasonal_prior") as run
     # Prior_scale=2.0 for weekday (strong skepticism — expected near-zero, locals shop flat year-round).
     # Prior_scale=5.0 for weekend (permissive — tourist uplift on Sat/Sun is real and substantial).
     model.add_regressor('ne_prior_weekday',        mode='additive', prior_scale=2.0)
-    model.add_regressor('ne_prior_weekend',        mode='additive', prior_scale=5.0)
+    # prior_scale=8.0 for weekends: coastal tourist weekend uplift in summer is strong
+    # and real — we want the model to learn a large coefficient without regularizing it
+    # back toward zero. Raised from 5.0 (Jun 2026) as model was under-indexing on
+    # recent Fri/Sat/Sun highs with the tighter prior.
+    model.add_regressor('ne_prior_weekend',        mode='additive', prior_scale=8.0)
     model.add_regressor('is_bread_delivery_day',   mode='multiplicative')
     model.add_regressor('weather_high_f',           mode='additive')
     model.add_regressor('total_precip_in',          mode='additive')
@@ -608,10 +654,11 @@ with mlflow.start_run(run_name="prophet_revenue_v7_split_seasonal_prior") as run
              color='#2E4057', linewidth=2, label='Forecast')
 
     # Plot actual dots — color-coded by training inclusion
-    excluded = all_historical[all_historical['ds'] < TRAIN_START]
-    included = all_historical[all_historical['ds'] >= TRAIN_START]
-    ax1.scatter(excluded['ds'], excluded['y_revenue'],
-                color='#8D99AE', s=20, alpha=0.5, label='Excluded (pre-Dec ramp-up)')
+    _excl_mask = all_historical.index.isin(all_historical[_in_excluded_period].index)
+    excluded_period = all_historical[_excl_mask]
+    included = all_historical[~_excl_mask & (all_historical['ds'] >= TRAIN_START)]
+    ax1.scatter(excluded_period['ds'], excluded_period['y_revenue'],
+                color='#E07A5F', s=20, alpha=0.5, label='Excluded (Sep–Dec 2025 ramp-up)')
     ax1.scatter(included['ds'], included['y_revenue'],
                 color='#E84855', s=25, alpha=0.7, label='Training data (Dec+)')
 
@@ -619,9 +666,9 @@ with mlflow.start_run(run_name="prophet_revenue_v7_split_seasonal_prior") as run
     ax1.axhline(REVENUE_CAP, color='#F4A261', linewidth=1.5, linestyle=':',
                 label=f'Revenue cap (${REVENUE_CAP:,.0f})')
 
-    # Mark training start
-    ax1.axvline(TRAIN_START, color='#06A77D', linewidth=2, linestyle='--',
-                label='Training start (Dec 1)', alpha=0.7)
+    # Mark excluded period boundaries
+    for _s, _e in EXCLUDE_PERIODS:
+        ax1.axvspan(_s, _e, color='#E07A5F', alpha=0.08, label='Excluded period')
 
     ax1.set_title('Prophet Revenue Forecast — Logistic Growth with Prior Seasonality',
                   fontsize=13, fontweight='bold')

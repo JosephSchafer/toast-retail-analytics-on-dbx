@@ -52,6 +52,9 @@
 # MAGIC |---|---|---|---|
 # MAGIC | v1 | 2026-03-28 | JS | Initial build — wrote to daily_sales_summary |
 # MAGIC | v3 | 2026-05-23 | JS | Split ne_seasonal_prior into ne_prior_weekday/weekend to match NB7 v7. Added exponentially-weighted rolling DOW blend (λ=0.75): 50/50 blend for days 1-7, 25/75 for days 8-14, Prophet-only for days 15-30. |
+# MAGIC | v7 | 2026-06-22 | JS | DOW multiplier (9c): weekend lookback 14→28 days (4 observations vs 2; reduces noise from single outlier weekend), switched to exp-weighted mean (λ=0.85; recent weeks count more), lowered min_obs for weekends to 1. Removed _SEASONAL_PRIOR_CAP (was 0.20): model retrained on Jan–Jun so cap suppresses rather than controls the summer signal. |
+| v6 | 2026-06-22 | JS | Replace zeroed bias correction with per-DOW recent-level multiplier (step 9c). Computes mean actual/forecast ratio over last 14 days per day-of-week; scales forward predictions. Transparent bridge correction with explicit step-down plan: reduce MULTIPLIER_SCALE to 0.5 on Sep 1 2026, disable (0.0) on Jan 1 2027, remove block entirely Jun 1 2027. |
+# MAGIC | v5 | 2026-06-22 | JS | Zero out bias correction (step 9c). Model flipped to under-forecasting ~+$470/day avg in Jun 2026 after summer ramp-up. Hardcoded constants were wrong direction. Real fix is NB7 v6 retraining with Sep–Dec 2025 excluded. |
 # MAGIC | v4 | 2026-06-18 | JS | Horizon-based bias correction (step 9c). Realized accuracy analysis (n=1,409 pairs) showed consistent over-forecasting of +$161–$362/day across all horizons even after DOW blend. Correction subtracted post-blend. |
 | v2 | 2026-03-31 | JS | Retargeted to gold.daily_sales_forecast to prevent duplication |
 
@@ -307,14 +310,13 @@ def _prior_seasonal_index(d):
 
 future_features['ne_seasonal_prior'] = future_features['ds'].apply(_prior_seasonal_index)
 
-# Summer raw index (May-Sep) reaches +0.22 to +0.50 above the annual mean.
-# Cap limits how far we extrapolate beyond the training window (all negative/near-zero).
-# Raised to 0.20 to let the tourism/snowbird summer pattern through while still
-# preventing the full +50% extrapolation (model hasn't observed a summer yet).
-_SEASONAL_PRIOR_CAP = 0.20
-future_features['ne_seasonal_prior'] = future_features['ne_seasonal_prior'].clip(upper=_SEASONAL_PRIOR_CAP)
+# No cap on the seasonal prior index. We previously capped at 0.20 to prevent
+# extrapolating summer too aggressively when the model had only seen winter.
+# Now (Jun 2026) the model has been retrained on Jan–Jun data and has observed
+# the spring ramp directly — capping suppresses the real summer signal it learned.
+# Summer raw index reaches +0.22 to +0.50; let it through fully.
 
-# Split into weekend/weekday components — must match NB7 v7 regressor definitions exactly.
+# Split into weekend/weekday components — must match NB7 v9 regressor definitions exactly.
 # The revenue model was trained with these two regressors; passing the unified ne_seasonal_prior
 # would cause a schema mismatch at predict() time.
 _is_wknd_fwd = (future_features['ds'].dt.dayofweek >= 5).astype(int)  # 5=Sat, 6=Sun
@@ -323,7 +325,7 @@ future_features['ne_prior_weekday'] = future_features['ne_seasonal_prior'] * (1 
 
 print(f"✓ Forward feature rows: {len(future_features)}")
 print(f"  Date range: {future_features['ds'].min().date()} → {future_features['ds'].max().date()}")
-print(f"  Seasonal prior range: {future_features['ne_seasonal_prior'].min():.3f} → {future_features['ne_seasonal_prior'].max():.3f} (cap={_SEASONAL_PRIOR_CAP})")
+print(f"  Seasonal prior range: {future_features['ne_seasonal_prior'].min():.3f} → {future_features['ne_seasonal_prior'].max():.3f} (no cap)")
 print(f"  Future closures in window: {future_features['likely_future_closure'].sum()}")
 
 # COMMAND ----------
@@ -425,43 +427,134 @@ for _, row in revenue_preds.head(7).iterrows():
 
 # COMMAND ----------
 
-# ── 9c. BIAS CORRECTION ───────────────────────────────────────────────────────
-# Realized accuracy analysis (n=1,409 forecast-vs-actual pairs from gold.daily_sales_forecast
-# vs gold.daily_sales_summary) showed consistent over-forecasting at every horizon,
-# even after the rolling DOW blend in step 9b. The amounts below are the RESIDUAL bias
-# remaining after the blend — subtract them to center the forecast distribution.
+# ── 9c. RECENT-LEVEL DOW MULTIPLIER ──────────────────────────────────────────
+# Bridge correction while the model accumulates enough seasonal data to self-correct.
 #
-# Horizon  | Observed bias | n
-# 1–3 days |        +$161  | 204
-# 4–7 days |        +$207  | 247
-# 8–14 days|        +$246  | 358
-# 15–21 days|       +$292  | 294
-# 22–30 days|       +$362  | 306
+# Prophet's linear trend is anchored to the full Jan–Jun training window. When
+# revenue steps up seasonally (e.g. summer ramp), the trend lags by weeks.
+# This step computes the mean (actual / forecast) ratio over the last 14 days
+# per day-of-week, then scales forward predictions by that ratio.
+#
+# This is intentionally transparent and auditable:
+#   - Per-DOW multipliers are printed each run so drift is visible
+#   - A multiplier near 1.0 for all DOWs means the model has caught up
+#   - The correction only applies when sufficient recent data exists (>=2 actuals
+#     per DOW in the window); DOWs with thin coverage fall back to 1.0
+#
+# ── STEP-DOWN PLAN ────────────────────────────────────────────────────────────
+# Remove or reduce this correction as the model accumulates a full seasonal cycle.
+# The model needs to *see* the fall decline and winter trough to learn the curve;
+# the multiplier will mask that signal if left on too long.
+#
+# Suggested review checkpoints (update MULTIPLIER_SCALE or set to 0.0 to disable):
+#
+#   Sep 1 2026  — first full summer in training data. Check if multipliers are
+#                 converging toward 1.0 on weekdays. If avg multiplier < 1.10,
+#                 set MULTIPLIER_SCALE = 0.5 (blend halfway toward no correction).
+#
+#   Jan 1 2027  — first full fall + winter in training data. Model should now
+#                 fit the seasonal curve end-to-end. If multipliers are 0.95–1.05
+#                 for most DOWs, set MULTIPLIER_SCALE = 0.0 to disable entirely.
+#
+#   Jun 1 2027  — first full year of clean data. At this point remove this block
+#                 completely and rely solely on NB7 retraining for level correction.
+#
+# MULTIPLIER_SCALE controls blend strength:
+#   1.0 = full correction applied   (current: model is significantly lagging)
+#   0.5 = half correction           (use when multipliers are converging to 1.0)
+#   0.0 = disabled                  (use when model is self-correcting reliably)
+MULTIPLIER_SCALE = 1.0
 
-_HORIZON_BIAS = [
-    (3,  160.0),
-    (7,  200.0),
-    (14, 245.0),
-    (21, 290.0),
-    (30, 360.0),
-]
+# Weekdays (Mon–Thu) use a 14-day lookback: 2–3 observations per DOW, sufficient
+# for a stable mean. Weekends use 28 days: only ~2 observations in 14 days was
+# too noisy — a single outlier weekend (rain, holiday) swings the ratio ±20%.
+# 28 days gives 4 Fri/Sat/Sun observations, enough for a reliable mean while
+# still capturing the current seasonal level.
+_DOW_LOOKBACK_WEEKDAY = 14
+_DOW_LOOKBACK_WEEKEND = 28
+# Spark dayofweek: 1=Sun, 6=Fri, 7=Sat
+_WEEKEND_DOWS = {1, 6, 7}
 
-def _get_bias(horizon_days: int) -> float:
-    for cutoff, bias in _HORIZON_BIAS:
-        if horizon_days <= cutoff:
-            return bias
-    return _HORIZON_BIAS[-1][1]
+_max_lookback = _DOW_LOOKBACK_WEEKEND  # fetch enough history for both windows
 
-revenue_preds['_horizon_tmp'] = revenue_preds['ds'].dt.date.apply(lambda d: (d - TODAY).days)
-revenue_preds['_bias_tmp']    = revenue_preds['_horizon_tmp'].apply(_get_bias)
+_recent_actuals = spark.sql(f"""
+    SELECT
+        DAYOFWEEK(business_date) AS dow,
+        business_date,
+        net_revenue AS actual
+    FROM {ACTUALS_TABLE}
+    WHERE business_date >= date_sub(current_date(), {_max_lookback})
+      AND business_date < current_date()
+      AND net_revenue > 0
+""").toPandas()
 
-revenue_preds['yhat']       = (revenue_preds['yhat']       - revenue_preds['_bias_tmp']).clip(0).round(2)
-revenue_preds['yhat_lower'] = (revenue_preds['yhat_lower'] - revenue_preds['_bias_tmp']).clip(0).round(2)
-revenue_preds['yhat_upper'] = (revenue_preds['yhat_upper'] - revenue_preds['_bias_tmp']).clip(0).round(2)
-revenue_preds.drop(columns=['_horizon_tmp', '_bias_tmp'], inplace=True)
+# For each date in actuals, find the most recent forecast made for that date
+_recent_forecasts = spark.sql(f"""
+    WITH latest AS (
+        SELECT business_date, net_revenue AS forecasted,
+            ROW_NUMBER() OVER (PARTITION BY business_date ORDER BY forecast_created_at DESC) AS rn
+        FROM {FORECAST_TABLE}
+        WHERE business_date >= date_sub(current_date(), {_max_lookback})
+          AND business_date < current_date()
+    )
+    SELECT business_date, forecasted FROM latest WHERE rn = 1
+""").toPandas()
 
-print(f"✓ Horizon-based bias correction applied ($160 at 1–3d → $360 at 22–30d)")
-print(f"  Bias-corrected forecast (next 7 days):")
+_recent = _recent_actuals.merge(_recent_forecasts, on='business_date', how='inner')
+_recent = _recent[_recent['forecasted'] > 0].copy()
+_recent['ratio'] = _recent['actual'] / _recent['forecasted']
+_recent['business_date'] = pd.to_datetime(_recent['business_date'])
+
+# Compute per-DOW exponentially-weighted mean ratio.
+# λ=0.85 per occurrence (most recent = 1.0, one occurrence back = 0.85, etc.).
+# This means last week's Friday counts ~2x as much as the Friday three weeks ago,
+# so a summer ramp-up registers quickly without letting one bad outlier dominate.
+# Minimum observations to apply: 2 for weekdays, 1 for weekends (we already have
+# a 4-observation window for weekends; applying with 1 is safer than falling back
+# to 1.0 if a holiday consumed one of four expected observations).
+_MULT_LAMBDA = 0.85
+_MIN_OBS_WEEKDAY = 2
+_MIN_OBS_WEEKEND = 1
+
+_dow_multipliers = {}
+print("✓ Recent-level DOW multipliers (exp-weighted actual/forecast ratios):")
+print(f"  {'DOW':<10} {'window':>7} {'n':>4} {'wtd ratio':>10} {'scaled mult':>12} {'applied?':>9}")
+print(f"  {'-'*57}")
+for _dow in range(1, 8):
+    _is_wknd   = _dow in _WEEKEND_DOWS
+    _lookback  = _DOW_LOOKBACK_WEEKEND if _is_wknd else _DOW_LOOKBACK_WEEKDAY
+    _min_obs   = _MIN_OBS_WEEKEND if _is_wknd else _MIN_OBS_WEEKDAY
+    _cutoff    = pd.Timestamp.now(tz='UTC').normalize() - pd.Timedelta(days=_lookback)
+    _subset    = _recent[
+        (_recent['dow'] == _dow) &
+        (_recent['business_date'] >= _cutoff)
+    ].sort_values('business_date')
+    _day_name  = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][_dow - 1]
+    _win_label = f"{_lookback}d"
+    if len(_subset) >= _min_obs:
+        _n = len(_subset)
+        # Exponential decay: most recent observation has weight λ^0 = 1.0
+        _weights = np.array([_MULT_LAMBDA ** (_n - 1 - i) for i in range(_n)])
+        _weights /= _weights.sum()
+        _raw_ratio = float(np.dot(_subset['ratio'].values, _weights))
+        _scaled    = 1.0 + (_raw_ratio - 1.0) * MULTIPLIER_SCALE
+        _dow_multipliers[_dow] = _scaled
+        print(f"  {_day_name:<10} {_win_label:>7} {_n:>4} {_raw_ratio:>10.3f} {_scaled:>12.3f} {'YES':>9}")
+    else:
+        _dow_multipliers[_dow] = 1.0
+        _n = len(_subset)
+        print(f"  {_day_name:<10} {_win_label:>7} {_n:>4} {'n/a':>10} {'1.000':>12} {'no (thin)':>9}")
+
+# Apply multipliers to revenue predictions
+revenue_preds['_dow_tmp'] = revenue_preds['ds'].dt.dayofweek.apply(lambda d: d + 2 if d < 6 else 1)
+revenue_preds['_mult_tmp'] = revenue_preds['_dow_tmp'].map(_dow_multipliers).fillna(1.0)
+
+revenue_preds['yhat']       = (revenue_preds['yhat']       * revenue_preds['_mult_tmp']).clip(0).round(2)
+revenue_preds['yhat_lower'] = (revenue_preds['yhat_lower'] * revenue_preds['_mult_tmp']).clip(0).round(2)
+revenue_preds['yhat_upper'] = (revenue_preds['yhat_upper'] * revenue_preds['_mult_tmp']).clip(0).round(2)
+revenue_preds.drop(columns=['_dow_tmp', '_mult_tmp'], inplace=True)
+
+print(f"\n  Corrected forecast (next 7 days):")
 print(f"  {'Date':<12} {'Day':<10} {'Revenue':>10} {'Lower':>10} {'Upper':>10}")
 print(f"  {'-'*52}")
 for _, row in revenue_preds.head(7).iterrows():
