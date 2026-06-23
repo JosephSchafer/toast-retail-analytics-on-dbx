@@ -57,6 +57,7 @@
 # MAGIC |---|---|---|---|
 # MAGIC | v7 | 2026-05-23 | JS | Split ne_seasonal_prior into ne_prior_weekday + ne_prior_weekend. Diagnosed +40-65% weekday over-forecast: uniform additive prior added ~$500/day equally across all DOWs while only weekends see tourist uplift. Separate regressors let model learn near-zero weekday coefficient. Added Memorial Day / July 4 / Labor Day as COASTAL_HOLIDAY events. Added rolling DOW blending in NB9 (50/50 for days 1-7, 25/75 for days 8-14). |
 # MAGIC | v6 | 2026-04-29 | JS | ne_seasonal_prior mode: multiplicative→additive. Multiplicative compounded the weekly peak with summer index (May Fri $3k+); additive adds a fixed $/day seasonal bonus instead. prior_scale restored to 5.0 — regularization doesn't help when data is strongly informative. |
+| v10 | 2026-06-23 | JS | Multi-variant retraining on Jun 2026 data. Ran three candidates in one pass (v10a: cps=0.15 baseline refresh; v10b: cps=0.25 to capture Jun acceleration inflection; v10c: cps=0.25 + weekday prior_scale 2→4). CV horizon fixed 14→30 days to match actual forecast window. Winner promoted to @production after comparison. |
 | v9 | 2026-06-22 | JS | TRAIN_START moved to Jan 1 2026 (was Sep 2025). Jan–Mar shoulder season was anchoring Fri/Sat/Sun baselines too low. With 6 months of Jan–Jun data, dropping winter gives Prophet a cleaner ramp signal. Also raised ne_prior_weekend prior_scale 5→8 to allow stronger tourist-weekend coefficient without over-regularization. |
 | v8 | 2026-06-22 | JS | Switch growth flat→linear, changepoint_prior_scale 0.05→0.15. Flat growth was architecturally incapable of following the Jan–Jun ramp; realized under-forecast ~+$470/day avg Jun 2026. Linear+flexible changepoints lets trend detect real inflections without logistic blowup. Revisit changepoint scale in Jan 2027 with full clean year. |
 | v6 | 2026-06-22 | JS | Replace TRAIN_START=Dec 2025 hard cutoff with EXCLUDE_PERIODS list. Excludes Sep–Dec 2025 (ramp-up: no liquor license, no advertising) while preserving future Decembers for seasonality. TRAIN_START moved back to Sep 1 2025 to be a no-op anchor. |
@@ -539,362 +540,368 @@ for _, _row in _bt_eval.sort_values('ds').iterrows():
 
 # COMMAND ----------
 
-# ── 10. TRAIN PROPHET MODEL ───────────────────────────────────────────────────
+# ── 10. TRAIN VARIANTS + CV ───────────────────────────────────────────────────
+#
+# Runs multiple candidate configurations in one pass. Each variant logs its own
+# MLflow run with a descriptive name. After all variants complete, a comparison
+# table is printed so you can pick the winner before promoting.
+#
+# Variant design:
+#   v10a — baseline refresh: same architecture as v9, retrained on Jun 2026 data.
+#           Isolates the gain from fresh data alone.
+#   v10b — cps=0.25: more flexible changepoints to capture the Jun acceleration
+#           inflection. Risk: can overfit weekly wiggles as "trend."
+#   v10c — cps=0.25 + weekday_prior_scale=4.0: weekday summer ramp signal is now
+#           real (Mon/Tue running $1,850–2,300 in Jun vs ~$1,400 in Jan). Raise
+#           weekday prior_scale to let the model assign more weight to the seasonal
+#           lift on those days instead of regularizing it toward zero.
+#
+# CV horizon = 30 days to match the actual forecast window we care about.
+# initial = 90 days gives enough folds across the Jan–Jun dataset.
 
-# Run name encodes the key architectural decisions so the Experiments UI
-# is scannable without opening individual runs.
-_run_name = (
-    f"prophet_revenue"
-    f"_{PROPHET_PARAMS['growth']}_growth"
-    f"_cps{str(PROPHET_PARAMS['changepoint_prior_scale']).replace('.','')}"
-    f"_train{str(TRAIN_START.date()).replace('-','')}"
-    f"_wknd_prior{int(8)}"  # ne_prior_weekend prior_scale — update if changed
-)
+_VARIANTS = [
+    {
+        "label":                  "v10a_cps015_baseline_refresh",
+        "changepoint_prior_scale": 0.15,
+        "wkday_prior_scale":       2.0,
+        "note":                   "v9 architecture retrained on Jun 2026 data — isolates data freshness gain",
+    },
+    {
+        "label":                  "v10b_cps025_june_inflection",
+        "changepoint_prior_scale": 0.25,
+        "wkday_prior_scale":       2.0,
+        "note":                   "Higher CPS to capture Jun acceleration trend inflection",
+    },
+    {
+        "label":                  "v10c_cps025_wkday_prior4",
+        "changepoint_prior_scale": 0.25,
+        "wkday_prior_scale":       4.0,
+        "note":                   "cps=0.25 + weekday prior_scale 2→4 (Mon/Tue summer ramp now real)",
+    },
+]
 
-with mlflow.start_run(run_name=_run_name) as run:
+_variant_results = []  # accumulate for comparison table
 
-    run_id = run.info.run_id
-    print(f"MLflow run started: {run_id}")
+for _v in _VARIANTS:
+    print(f"\n{'='*60}")
+    print(f"  Variant: {_v['label']}")
+    print(f"  {_v['note']}")
+    print(f"{'='*60}")
 
-    # Log all configuration
-    mlflow.log_params(PROPHET_PARAMS)
-    mlflow.log_param("training_start",   str(TRAIN_START.date()))
-    mlflow.log_param("exclude_periods",  str([(str(s.date()), str(e.date())) for s, e in EXCLUDE_PERIODS]))
-    mlflow.log_param("training_rows",    len(train_df))
-    mlflow.log_param("revenue_cap",      REVENUE_CAP)
-    mlflow.log_param("forecast_days",    FORECAST_DAYS)
-    mlflow.log_param("holiday_count",    len(holidays_df))
-    mlflow.log_param("target",           "net_revenue")
-    mlflow.log_param("seasonal_prior",   "prior_store_avg_2022_2023")
-    mlflow.log_metric("backtest_mape",        round(_bt_mape,     2))
-    mlflow.log_metric("backtest_mae",         round(_bt_mae,      2))
-    mlflow.log_metric("backtest_ci_coverage", round(_bt_ci_cover, 2))
-    mlflow.set_tag("training_date",           str(pd.Timestamp.today().date()))
-    mlflow.log_param("training_data_through", str(train_df['ds'].max().date()))
+    _params = dict(PROPHET_PARAMS)
+    _params["changepoint_prior_scale"] = _v["changepoint_prior_scale"]
 
-    # ── Instantiate Prophet ───────────────────────────────────────────────────
-    model = Prophet(
-        growth                  = PROPHET_PARAMS["growth"],
-        changepoint_prior_scale = PROPHET_PARAMS["changepoint_prior_scale"],
-        seasonality_prior_scale = PROPHET_PARAMS["seasonality_prior_scale"],
-        holidays_prior_scale    = PROPHET_PARAMS["holidays_prior_scale"],
-        seasonality_mode        = PROPHET_PARAMS["seasonality_mode"],
-        yearly_seasonality      = PROPHET_PARAMS["yearly_seasonality"],
-        weekly_seasonality      = PROPHET_PARAMS["weekly_seasonality"],
-        daily_seasonality       = PROPHET_PARAMS["daily_seasonality"],
-        holidays                = holidays_df,
+    _run_name = (
+        f"prophet_revenue_linear_growth"
+        f"_cps{str(_v['changepoint_prior_scale']).replace('.', '')}"
+        f"_train{str(TRAIN_START.date()).replace('-', '')}"
+        f"_wkday{str(_v['wkday_prior_scale']).replace('.', '')}"
+        f"_wknd8"
     )
 
-    # Split seasonal prior: weekend and weekday get separate learned coefficients.
-    # Prior_scale=2.0 for weekday (strong skepticism — expected near-zero, locals shop flat year-round).
-    # Prior_scale=5.0 for weekend (permissive — tourist uplift on Sat/Sun is real and substantial).
-    model.add_regressor('ne_prior_weekday',        mode='additive', prior_scale=2.0)
-    # prior_scale=8.0 for weekends: coastal tourist weekend uplift in summer is strong
-    # and real — we want the model to learn a large coefficient without regularizing it
-    # back toward zero. Raised from 5.0 (Jun 2026) as model was under-indexing on
-    # recent Fri/Sat/Sun highs with the tighter prior.
-    model.add_regressor('ne_prior_weekend',        mode='additive', prior_scale=8.0)
-    model.add_regressor('is_bread_delivery_day',   mode='multiplicative')
-    model.add_regressor('weather_high_f',           mode='additive')
-    model.add_regressor('total_precip_in',          mode='additive')
+    with mlflow.start_run(run_name=_run_name) as _run:
+        _run_id = _run.info.run_id
 
-    # ── Prepare fit dataframe ─────────────────────────────────────────────────
-    fit_df = train_df[['ds', 'y_revenue', 'cap', 'floor',
-                        'ne_prior_weekday', 'ne_prior_weekend',
-                        'is_bread_delivery_day',
-                        'weather_high_f',
-                        'total_precip_in']].rename(
-        columns={'y_revenue': 'y'}
-    ).dropna(subset=['ds', 'y'])
+        mlflow.log_params(_params)
+        mlflow.log_param("training_start",        str(TRAIN_START.date()))
+        mlflow.log_param("training_data_through",  str(train_df['ds'].max().date()))
+        mlflow.log_param("training_rows",          len(train_df))
+        mlflow.log_param("revenue_cap",            REVENUE_CAP)
+        mlflow.log_param("forecast_days",          FORECAST_DAYS)
+        mlflow.log_param("target",                 "net_revenue")
+        mlflow.log_param("seasonal_prior",         "prior_store_avg_2022_2023")
+        mlflow.log_param("wkday_prior_scale",      _v["wkday_prior_scale"])
+        mlflow.log_param("wkend_prior_scale",      8.0)
+        mlflow.log_param("variant_note",           _v["note"])
+        mlflow.log_metric("backtest_mape",         round(_bt_mape,     2))
+        mlflow.log_metric("backtest_mae",          round(_bt_mae,      2))
+        mlflow.log_metric("backtest_ci_coverage",  round(_bt_ci_cover, 2))
+        mlflow.set_tag("training_date",            str(pd.Timestamp.today().date()))
+        mlflow.set_tag("status",                   "candidate")
+        mlflow.set_tag("model_type",               "prophet")
+        mlflow.set_tag("target",                   "net_revenue")
 
-    for col in ['weather_high_f', 'total_precip_in']:
-        fit_df[col] = fit_df[col].fillna(fit_df[col].median())
-    fit_df['is_bread_delivery_day'] = fit_df['is_bread_delivery_day'].fillna(False).astype(int)
+        # ── Build model ───────────────────────────────────────────────────────
+        _model = Prophet(
+            growth                  = _params["growth"],
+            changepoint_prior_scale = _params["changepoint_prior_scale"],
+            seasonality_prior_scale = _params["seasonality_prior_scale"],
+            holidays_prior_scale    = _params["holidays_prior_scale"],
+            seasonality_mode        = _params["seasonality_mode"],
+            yearly_seasonality      = _params["yearly_seasonality"],
+            weekly_seasonality      = _params["weekly_seasonality"],
+            daily_seasonality       = _params["daily_seasonality"],
+            holidays                = holidays_df,
+        )
+        _model.add_regressor('ne_prior_weekday',      mode='additive', prior_scale=_v["wkday_prior_scale"])
+        _model.add_regressor('ne_prior_weekend',      mode='additive', prior_scale=8.0)
+        _model.add_regressor('is_bread_delivery_day', mode='multiplicative')
+        _model.add_regressor('weather_high_f',        mode='additive')
+        _model.add_regressor('total_precip_in',       mode='additive')
 
-    print("Fitting Prophet model...")
-    model.fit(fit_df[['ds', 'y', 'cap', 'floor',
-                       'ne_prior_weekday', 'ne_prior_weekend',
-                       'is_bread_delivery_day',
-                       'weather_high_f', 'total_precip_in']])
-    print("✓ Model fitted")
+        # ── Fit ───────────────────────────────────────────────────────────────
+        _fit_df = train_df[['ds', 'y_revenue', 'cap', 'floor',
+                             'ne_prior_weekday', 'ne_prior_weekend',
+                             'is_bread_delivery_day',
+                             'weather_high_f', 'total_precip_in']].rename(
+            columns={'y_revenue': 'y'}
+        ).dropna(subset=['ds', 'y']).copy()
+        for _col in ['weather_high_f', 'total_precip_in']:
+            _fit_df[_col] = _fit_df[_col].fillna(_fit_df[_col].median())
+        _fit_df['is_bread_delivery_day'] = _fit_df['is_bread_delivery_day'].fillna(False).astype(int)
 
-    # ── Build forecast input ──────────────────────────────────────────────────
-    # Combine ALL historical dates (not just training) plus future dates
-    # so the chart shows how the model fits the full history
-    hist_input = all_historical[['ds', 'ne_prior_weekday', 'ne_prior_weekend',
-                                  'is_bread_delivery_day',
-                                  'weather_high_f', 'total_precip_in']].copy()
-    fwd_input  = future_df[['ds', 'ne_prior_weekday', 'ne_prior_weekend',
-                              'is_bread_delivery_day',
-                              'weather_high_f', 'total_precip_in']].copy()
+        print(f"  Fitting on {len(_fit_df)} rows ({_fit_df['ds'].min().date()} → {_fit_df['ds'].max().date()})...")
+        _model.fit(_fit_df[['ds', 'y', 'cap', 'floor',
+                             'ne_prior_weekday', 'ne_prior_weekend',
+                             'is_bread_delivery_day', 'weather_high_f', 'total_precip_in']])
+        print(f"  ✓ Fitted")
 
-    for col in ['weather_high_f', 'total_precip_in']:
-        fwd_input[col] = fwd_input[col].fillna(train_df[col].median())
-    for df_part in [hist_input, fwd_input]:
-        df_part['is_bread_delivery_day'] = df_part['is_bread_delivery_day'].fillna(False).astype(int)
+        # ── Predict over all history + future ─────────────────────────────────
+        _hist_in = all_historical[['ds', 'ne_prior_weekday', 'ne_prior_weekend',
+                                    'is_bread_delivery_day', 'weather_high_f', 'total_precip_in']].copy()
+        _fwd_in  = future_df[['ds', 'ne_prior_weekday', 'ne_prior_weekend',
+                               'is_bread_delivery_day', 'weather_high_f', 'total_precip_in']].copy()
+        for _col in ['weather_high_f', 'total_precip_in']:
+            _fwd_in[_col] = _fwd_in[_col].fillna(train_df[_col].median())
+        for _df_part in [_hist_in, _fwd_in]:
+            _df_part['is_bread_delivery_day'] = _df_part['is_bread_delivery_day'].fillna(False).astype(int)
+        _fc_input = pd.concat([_hist_in, _fwd_in], ignore_index=True).drop_duplicates('ds')
+        _fc_input['cap']   = REVENUE_CAP
+        _fc_input['floor'] = 0.0
+        _forecast = _model.predict(_fc_input)
 
-    forecast_input = pd.concat([hist_input, fwd_input], ignore_index=True).drop_duplicates('ds')
-    forecast_input['cap']   = REVENUE_CAP
-    forecast_input['floor'] = 0.0
+        # ── In-sample metrics ─────────────────────────────────────────────────
+        _eval = _forecast[['ds', 'yhat']].merge(train_df[['ds', 'y_revenue']], on='ds', how='inner')
+        _mae  = np.mean(np.abs(_eval['yhat'] - _eval['y_revenue']))
+        _nonz = _eval[_eval['y_revenue'] > 0]
+        _mape = np.mean(np.abs((_nonz['yhat'] - _nonz['y_revenue']) / _nonz['y_revenue'])) * 100
+        _rmse = np.sqrt(np.mean((_eval['yhat'] - _eval['y_revenue']) ** 2))
+        _ss_res = np.sum((_eval['y_revenue'] - _eval['yhat']) ** 2)
+        _ss_tot = np.sum((_eval['y_revenue'] - _eval['y_revenue'].mean()) ** 2)
+        _r2   = 1 - (_ss_res / _ss_tot)
+        mlflow.log_metric("mae",  round(_mae,  2))
+        mlflow.log_metric("mape", round(_mape, 2))
+        mlflow.log_metric("rmse", round(_rmse, 2))
+        mlflow.log_metric("r2",   round(_r2,   4))
+        print(f"  In-sample — MAE: ${_mae:,.0f}  MAPE: {_mape:.1f}%  R²: {_r2:.3f}")
 
-    forecast = model.predict(forecast_input)
+        # ── Forecast chart ────────────────────────────────────────────────────
+        _fig1, _ax1 = plt.subplots(figsize=(14, 6))
+        _ax1.fill_between(pd.to_datetime(_forecast['ds']),
+                          _forecast['yhat_lower'].clip(0),
+                          _forecast['yhat_upper'].clip(0, REVENUE_CAP),
+                          alpha=0.2, color='#2E4057', label='CI')
+        _ax1.plot(pd.to_datetime(_forecast['ds']), _forecast['yhat'].clip(0),
+                  color='#2E4057', linewidth=2, label='Forecast')
+        _excl_mask = all_historical.index.isin(all_historical[_in_excluded_period].index)
+        _ax1.scatter(all_historical[~_excl_mask & (all_historical['ds'] >= TRAIN_START)]['ds'],
+                     all_historical[~_excl_mask & (all_historical['ds'] >= TRAIN_START)]['y_revenue'],
+                     color='#E84855', s=20, alpha=0.7, label='Training data')
+        _ax1.axhline(REVENUE_CAP, color='#F4A261', linewidth=1.5, linestyle=':',
+                     label=f'Cap (${REVENUE_CAP:,.0f})')
+        _ax1.set_title(f'Prophet Revenue — {_v["label"]}', fontsize=12, fontweight='bold')
+        _ax1.set_ylabel('Net Revenue ($)')
+        _ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${x:,.0f}'))
+        _ax1.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
+        _ax1.xaxis.set_major_locator(mdates.MonthLocator())
+        plt.setp(_ax1.xaxis.get_majorticklabels(), rotation=20, ha='right')
+        _ax1.legend(loc='upper left', fontsize=9)
+        _ax1.set_ylim(-200, REVENUE_CAP * 1.1)
+        _fig1.tight_layout()
+        _chart_path = f'/tmp/forecast_{_v["label"]}.png'
+        _fig1.savefig(_chart_path, dpi=150, bbox_inches='tight')
+        mlflow.log_artifact(_chart_path)
+        plt.show()
 
-    # ── Accuracy metrics (on training period only) ────────────────────────────
-    eval_df = forecast[['ds', 'yhat']].merge(
-        train_df[['ds', 'y_revenue']],
-        on='ds', how='inner'
+        # ── Cross-validation (horizon=30d — matches actual forecast window) ───
+        _cv_mape = _cv_mae = _cv_mape_7d = _cv_mape_14d = _cv_mape_30d = None
+        print(f"  Running CV (horizon=30d)...")
+        try:
+            _df_cv = cross_validation(
+                _model,
+                initial  = '90 days',
+                period   = '21 days',
+                horizon  = '30 days',
+                parallel = None,
+            )
+            _df_perf = performance_metrics(_df_cv)
+            _cv_mae  = _df_perf['mae'].mean()
+            _cv_mape = _df_perf['mape'].mean() * 100
+            mlflow.log_metric("cv_mae",  round(_cv_mae,  2))
+            mlflow.log_metric("cv_mape", round(_cv_mape, 2))
+
+            # Per-horizon MAPE at 7, 14, 30 days
+            _hm = _df_cv.copy()
+            _hm = _hm[_hm['y'] > 0].copy()
+            _hm['abs_pct_err'] = np.abs((_hm['yhat'] - _hm['y']) / _hm['y']) * 100
+            _hm['days'] = _hm['horizon'].dt.days
+            _hm_grp = _hm.groupby('days')['abs_pct_err'].mean()
+            for _h, _attr in [(7, '_cv_mape_7d'), (14, '_cv_mape_14d'), (30, '_cv_mape_30d')]:
+                _candidates = _hm_grp.index[(_hm_grp.index >= _h - 1) & (_hm_grp.index <= _h + 1)]
+                if len(_candidates):
+                    _val = round(float(_hm_grp[_candidates].mean()), 2)
+                    mlflow.log_metric(f"cv_mape_{_h}d", _val)
+                    locals()[_attr.lstrip('_')] = _val  # noqa — dynamic assignment intentional
+                    if _attr == '_cv_mape_7d':  _cv_mape_7d  = _val
+                    if _attr == '_cv_mape_14d': _cv_mape_14d = _val
+                    if _attr == '_cv_mape_30d': _cv_mape_30d = _val
+
+            # Horizon accuracy chart
+            _fig3, _ax3 = plt.subplots(figsize=(10, 4))
+            _ax3.plot(_hm_grp.index, _hm_grp.values, color='#2E4057', linewidth=2, marker='o', markersize=4)
+            _ax3.axhline(_cv_mape, color='#E84855', linestyle='--', linewidth=1.5,
+                         label=f'Avg MAPE: {_cv_mape:.1f}%')
+            for _h_mark in [7, 14, 30]:
+                _ax3.axvline(_h_mark, color='gray', linestyle=':', linewidth=1)
+            _ax3.set_xlabel('Days into horizon')
+            _ax3.set_ylabel('MAPE (%)')
+            _ax3.set_title(f'CV Accuracy by Horizon — {_v["label"]}', fontsize=11, fontweight='bold')
+            _ax3.legend()
+            _fig3.tight_layout()
+            _cv_chart = f'/tmp/cv_horizon_{_v["label"]}.png'
+            _fig3.savefig(_cv_chart, dpi=150, bbox_inches='tight')
+            mlflow.log_artifact(_cv_chart)
+            plt.show()
+
+            print(f"  CV MAPE (30d horizon): {_cv_mape:.1f}%  |  7d: {_cv_mape_7d}%  14d: {_cv_mape_14d}%  30d: {_cv_mape_30d}%")
+        except Exception as _e:
+            print(f"  CV skipped: {_e}")
+
+        # ── Log model artifact (no registration — compare first) ──────────────
+        _sig = infer_signature(
+            _fc_input[['ds', 'cap', 'floor', 'ne_prior_weekday', 'ne_prior_weekend',
+                        'is_bread_delivery_day', 'weather_high_f', 'total_precip_in']],
+            _forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']],
+        )
+        mlflow.prophet.log_model(
+            pr_model      = _model,
+            artifact_path = "prophet_revenue_model",
+            signature     = _sig,
+        )
+        print(f"  ✓ Logged to MLflow run {_run_id}")
+
+    # Stash results for comparison — keep reference to last fitted model/forecast
+    _variant_results.append({
+        "label":       _v["label"],
+        "run_id":      _run_id,
+        "train_mape":  round(_mape, 1),
+        "train_r2":    round(_r2, 3),
+        "cv_mape":     round(_cv_mape, 1) if _cv_mape is not None else None,
+        "cv_mape_7d":  _cv_mape_7d,
+        "cv_mape_14d": _cv_mape_14d,
+        "cv_mape_30d": _cv_mape_30d,
+        "bt_mape":     round(_bt_mape, 1),
+        "model":       _model,
+        "forecast":    _forecast,
+        "fit_df":      _fit_df,
+    })
+
+# ── Comparison table ──────────────────────────────────────────────────────────
+print(f"\n{'='*90}")
+print(f"  VARIANT COMPARISON — pick the winner for promotion")
+print(f"{'='*90}")
+print(f"  {'Variant':<40} {'tr_mape':>8} {'tr_r2':>7} {'cv_mape':>8} {'cv_7d':>7} {'cv_14d':>7} {'cv_30d':>7} {'bt_mape':>8}")
+print(f"  {'-'*90}")
+for _r in _variant_results:
+    def _fmt(v): return f"{v:.1f}%" if v is not None else "  n/a  "
+    print(
+        f"  {_r['label']:<40}"
+        f"  {_fmt(_r['train_mape']):>8}"
+        f"  {_r['train_r2']:>6.3f}"
+        f"  {_fmt(_r['cv_mape']):>8}"
+        f"  {_fmt(_r['cv_mape_7d']):>7}"
+        f"  {_fmt(_r['cv_mape_14d']):>7}"
+        f"  {_fmt(_r['cv_mape_30d']):>7}"
+        f"  {_fmt(_r['bt_mape']):>8}"
     )
-    mae  = np.mean(np.abs(eval_df['yhat'] - eval_df['y_revenue']))
-    nonz = eval_df[eval_df['y_revenue'] > 0]
-    mape = np.mean(np.abs((nonz['yhat'] - nonz['y_revenue']) / nonz['y_revenue'])) * 100
-    rmse = np.sqrt(np.mean((eval_df['yhat'] - eval_df['y_revenue']) ** 2))
-    ss_res = np.sum((eval_df['y_revenue'] - eval_df['yhat']) ** 2)
-    ss_tot = np.sum((eval_df['y_revenue'] - eval_df['y_revenue'].mean()) ** 2)
-    r2   = 1 - (ss_res / ss_tot)
+print(f"\n  Primary sort key: cv_mape_30d (lowest = best at the 30-day window we care about)")
+print(f"  Tiebreaker: cv_mape_14d, then bt_mape")
+print(f"\n  Run IDs:")
+for _r in _variant_results:
+    print(f"    {_r['label']}: {_r['run_id']}")
+print(f"\n  → Set run_id and _promote=True in cell 10a to register and promote the winner.")
 
-    mlflow.log_metric("mae",  round(mae,  2))
-    mlflow.log_metric("mape", round(mape, 2))
-    mlflow.log_metric("rmse", round(rmse, 2))
-    mlflow.log_metric("r2",   round(r2,   4))
-
-    print(f"\nModel accuracy (training period Dec 1 onward):")
-    print(f"  MAE:  ${mae:,.2f}  (average dollar error per day)")
-    print(f"  MAPE: {mape:.1f}%  (average % error)")
-    print(f"  RMSE: ${rmse:,.2f}")
-    print(f"  R²:   {r2:.3f}   (1.0 = perfect)")
-
-    # ── Forecast chart ────────────────────────────────────────────────────────
-    fig1, ax1 = plt.subplots(figsize=(14, 6))
-    ax1.fill_between(pd.to_datetime(forecast['ds']),
-                     forecast['yhat_lower'].clip(0),
-                     forecast['yhat_upper'].clip(0, REVENUE_CAP),
-                     alpha=0.2, color='#2E4057', label='Confidence interval')
-    ax1.plot(pd.to_datetime(forecast['ds']), forecast['yhat'].clip(0),
-             color='#2E4057', linewidth=2, label='Forecast')
-
-    # Plot actual dots — color-coded by training inclusion
-    _excl_mask = all_historical.index.isin(all_historical[_in_excluded_period].index)
-    excluded_period = all_historical[_excl_mask]
-    included = all_historical[~_excl_mask & (all_historical['ds'] >= TRAIN_START)]
-    ax1.scatter(excluded_period['ds'], excluded_period['y_revenue'],
-                color='#E07A5F', s=20, alpha=0.5, label='Excluded (Sep–Dec 2025 ramp-up)')
-    ax1.scatter(included['ds'], included['y_revenue'],
-                color='#E84855', s=25, alpha=0.7, label='Training data (Dec+)')
-
-    # Revenue cap line
-    ax1.axhline(REVENUE_CAP, color='#F4A261', linewidth=1.5, linestyle=':',
-                label=f'Revenue cap (${REVENUE_CAP:,.0f})')
-
-    # Mark excluded period boundaries
-    for _s, _e in EXCLUDE_PERIODS:
-        ax1.axvspan(_s, _e, color='#E07A5F', alpha=0.08, label='Excluded period')
-
-    ax1.set_title(f'Prophet Revenue Forecast — {PROPHET_PARAMS["growth"].title()} Growth + Prior Seasonality',
-                  fontsize=13, fontweight='bold')
-    ax1.set_ylabel('Net Revenue ($)')
-    ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${x:,.0f}'))
-    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
-    ax1.xaxis.set_major_locator(mdates.MonthLocator())
-    plt.setp(ax1.xaxis.get_majorticklabels(), rotation=20, ha='right')
-    ax1.legend(loc='upper left', fontsize=9)
-    ax1.set_ylim(-500, REVENUE_CAP * 1.15)
-    fig1.tight_layout()
-    fig1.savefig('/tmp/prophet_revenue_forecast_v2.png', dpi=150, bbox_inches='tight')
-    mlflow.log_artifact('/tmp/prophet_revenue_forecast_v2.png')
-    plt.show()
-
-    # ── Component chart ───────────────────────────────────────────────────────
-    fig2 = model.plot_components(forecast, figsize=(14, 12))
-    fig2.suptitle('Prophet Components — Trend, Seasonality, Events',
-                  fontsize=13, fontweight='bold', y=1.01)
-    fig2.savefig('/tmp/prophet_revenue_components_v2.png', dpi=150, bbox_inches='tight')
-    mlflow.log_artifact('/tmp/prophet_revenue_components_v2.png')
-    plt.show()
-
-    # ── Log model ─────────────────────────────────────────────────────────────
-    # Unity Catalog requires a model signature (input + output schema).
-    signature = infer_signature(
-        forecast_input[['ds', 'cap', 'floor', 'ne_prior_weekday', 'ne_prior_weekend',
-                         'is_bread_delivery_day',
-                         'weather_high_f', 'total_precip_in']],
-        forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']],
-    )
-    # Log model artifact ONLY — do not register or promote here.
-    # Registration and @production promotion happen in the cell below,
-    # AFTER reviewing this run against other candidates in the Experiments UI.
-    # This is intentional: every retrain is a candidate, not an automatic deployment.
-    mlflow.prophet.log_model(
-        pr_model      = model,
-        artifact_path = "prophet_revenue_model",
-        signature     = signature,
-    )
-
-    # Tag this run as a candidate (not yet promoted)
-    mlflow.set_tag("status", "candidate")
-    mlflow.set_tag("model_type", "prophet")
-    mlflow.set_tag("target", "net_revenue")
-
-    print(f"\n✓ Model artifact logged (not yet registered)")
-    print(f"  Run ID:   {run_id}")
-    print(f"  Run name: {_run_name}")
-    print(f"\n  ── Next step ──")
-    print(f"  Review this run vs prior candidates in:")
-    print(f"  Experiments → {EXPERIMENT_NAME}")
-    print(f"  Key metrics to compare: cv_mape, backtest_mape, tr_r2")
-    print(f"  Then run the PROMOTION cell below to register and set @production.")
+# Expose the last-trained model and forecast for downstream cells (validation, history logging)
+# Update these to point at whichever variant you intend to promote.
+# Default: last variant in the loop (v10c). Change index below if winner differs.
+_WINNER_IDX = len(_variant_results) - 1  # ← change to 0 or 1 if a different variant wins
+model    = _variant_results[_WINNER_IDX]["model"]
+forecast = _variant_results[_WINNER_IDX]["forecast"]
+run_id   = _variant_results[_WINNER_IDX]["run_id"]
+mae      = float('nan')  # in-sample MAE not re-computed here; use mlflow metric
+mape     = _variant_results[_WINNER_IDX]["train_mape"]
+r2       = _variant_results[_WINNER_IDX]["train_r2"]
+cv_mape  = _variant_results[_WINNER_IDX]["cv_mape"]
+cv_mae   = None
+cv_mape_7d  = _variant_results[_WINNER_IDX]["cv_mape_7d"]
+cv_mape_14d = _variant_results[_WINNER_IDX]["cv_mape_14d"]
 
 # COMMAND ----------
 
-# ── 10a. PROMOTE TO @production ── RUN MANUALLY AFTER REVIEWING EXPERIMENTS UI ──
+# ── 10a. PROMOTE TO @production ── RUN MANUALLY AFTER REVIEWING COMPARISON TABLE ──
 #
-# Do NOT run this cell automatically. Steps:
-#   1. Go to Experiments → toast_prophet_revenue in the Databricks sidebar
-#   2. Compare this run's cv_mape and backtest_mape against prior versions
-#   3. If this run is the best candidate, run this cell to register and promote
+# Steps:
+#   1. Read the comparison table printed above — lowest cv_mape_30d wins
+#   2. If a different variant than the default (_WINNER_IDX) is better,
+#      set run_id to that variant's run_id (printed above)
+#   3. Set _promote = True and run this cell
 #
-# To compare programmatically:
-#   client.search_runs(experiment_ids=[exp_id], order_by=["metrics.cv_mape ASC"])
-#
-# The @production alias is what NB9 loads via:
-#   mlflow.prophet.load_model("models:/MODEL_NAME@production")
-# Changing it takes effect on the NEXT daily NB9 run.
+# The @production alias is what NB9 loads. Changing it takes effect on the next
+# daily NB9 run (or trigger NB9 manually for an immediate refresh).
 
-_promote = False  # ← Set to True and run this cell when ready to promote
+_promote = False  # ← Set to True after reviewing the comparison table above
 
 if _promote:
     _reg_client = mlflow.tracking.MlflowClient()
 
-    # Tag any existing @production version as deprecated before reassigning
     try:
         _old_prod = _reg_client.get_model_version_by_alias(MODEL_NAME, "production")
         _reg_client.set_model_version_tag(MODEL_NAME, _old_prod.version, "status", "deprecated")
         print(f"  Previous @production v{_old_prod.version} → deprecated")
     except Exception:
-        pass  # No prior production version
+        pass
 
-    # Register this run's artifact as a new version
     _mv = mlflow.register_model(f"runs:/{run_id}/prophet_revenue_model", MODEL_NAME)
-
-    # Tag the new version
+    _winning_label = next((r["label"] for r in _variant_results if r["run_id"] == run_id), run_id)
     _reg_client.set_model_version_tag(MODEL_NAME, _mv.version, "status",        "production")
-    _reg_client.set_model_version_tag(MODEL_NAME, _mv.version, "version_tag",   _run_name)
+    _reg_client.set_model_version_tag(MODEL_NAME, _mv.version, "version_tag",   _winning_label)
     _reg_client.set_model_version_tag(MODEL_NAME, _mv.version, "training_date", str(pd.Timestamp.today().date()))
-
-    # Promote
     _reg_client.set_registered_model_alias(MODEL_NAME, "production", _mv.version)
-    print(f"  ✓ Registered v{_mv.version} and promoted → @production alias")
-    print(f"  Model: {MODEL_NAME}")
-    print(f"  Run:   {run_id}")
+
+    print(f"  ✓ Registered v{_mv.version} → @production")
+    print(f"  Variant: {_winning_label}")
+    print(f"  Run ID:  {run_id}")
+    print(f"  Model:   {MODEL_NAME}")
+    print(f"\n  Next: trigger NB9 (job 601248779031413 task forecast_generate) to regenerate forecasts.")
 else:
-    print("Promotion skipped (_promote=False). Set _promote=True after reviewing Experiments UI.")
-    print(f"  This run's ID: {run_id}")
-    print(f"  Run name:      {_run_name}")
-
-# COMMAND ----------
-
-# ── 10. CROSS-VALIDATION ──────────────────────────────────────────────────────
-# With ~4 months of training data (Dec-Mar), we have limited room for
-# cross-validation folds. We try with conservative settings.
-
-cv_mae = cv_mape = cv_rmse = None
-cv_mape_7d = cv_mape_14d = None
-print("Running cross-validation...")
-with mlflow.start_run(run_id=run_id):
-    try:
-        df_cv = cross_validation(
-            model,
-            initial  = '60 days',
-            period   = '30 days',
-            horizon  = '14 days',
-            parallel = None,
-        )
-        df_perf = performance_metrics(df_cv)
-        cv_mae  = df_perf['mae'].mean()
-        cv_mape = df_perf['mape'].mean() * 100
-        cv_rmse = df_perf['rmse'].mean()
-
-        mlflow.log_metric("cv_mae",  round(cv_mae,  2))
-        mlflow.log_metric("cv_mape", round(cv_mape, 2))
-        mlflow.log_metric("cv_rmse", round(cv_rmse, 2))
-
-        print(f"\nCross-validation results (honest out-of-sample accuracy):")
-        print(f"  CV MAE:   ${cv_mae:,.2f}")
-        print(f"  CV MAPE:  {cv_mape:.1f}%")
-        print(f"  CV RMSE:  ${cv_rmse:,.2f}")
-        print(f"\nNote: CV metrics are higher than training metrics — that is correct.")
-        print(f"They reflect real forecast error on data the model had not seen.")
-
-        # Accuracy by horizon chart
-        fig3, ax = plt.subplots(figsize=(10, 4))
-        horizon_mape = df_cv.copy()
-        horizon_mape = horizon_mape[horizon_mape['y'] > 0]
-        horizon_mape['abs_pct_err'] = np.abs(
-            (horizon_mape['yhat'] - horizon_mape['y']) / horizon_mape['y']
-        ) * 100
-        horizon_mape['days'] = horizon_mape['horizon'].dt.days
-        hm = horizon_mape.groupby('days')['abs_pct_err'].mean().reset_index()
-
-        ax.plot(hm['days'], hm['abs_pct_err'],
-                color='#2E4057', linewidth=2.5, marker='o', markersize=5)
-        ax.fill_between(hm['days'], hm['abs_pct_err'], alpha=0.1, color='#2E4057')
-        ax.axhline(cv_mape, color='#E84855', linestyle='--', linewidth=1.5,
-                   label=f'Average MAPE: {cv_mape:.1f}%')
-        ax.set_xlabel('Days into forecast horizon')
-        ax.set_ylabel('MAPE (%)')
-        ax.set_title('Forecast Accuracy by Horizon\n(how accuracy changes as we predict further out)',
-                     fontsize=12, fontweight='bold')
-        ax.legend()
-        fig3.savefig('/tmp/prophet_cv_horizon_v2.png', dpi=150, bbox_inches='tight')
-        mlflow.log_artifact('/tmp/prophet_cv_horizon_v2.png')
-        plt.show()
-
-        for _h in [7, 14]:
-            _hm_row = hm[hm['days'] == _h]
-            if not _hm_row.empty:
-                _v = round(float(_hm_row['abs_pct_err'].values[0]), 2)
-                mlflow.log_metric(f"cv_mape_{_h}d", _v)
-                if _h == 7:  cv_mape_7d  = _v
-                if _h == 14: cv_mape_14d = _v
-
-    except Exception as e:
-        print(f"Cross-validation skipped: {e}")
-        print("This can happen with limited training data. Model is still valid.")
+    print("Promotion skipped. Set _promote=True after reviewing the comparison table.")
+    print(f"  Current _WINNER_IDX={_WINNER_IDX} → {_variant_results[_WINNER_IDX]['label']}")
+    print(f"  run_id = '{run_id}'")
 
 # COMMAND ----------
 
 # ── 11. VALIDATION ────────────────────────────────────────────────────────────
-# Forecast rows are written by 9_Forecast_Generate.py — nothing to write here.
 
 print("\n── Last 7 days actuals ──")
 spark.sql(f"""
-    SELECT
-        business_date,
-        day_name,
-        ROUND(net_revenue, 2)           AS revenue,
-        order_count,
-        weather_high_f,
-        weather_category,
-        is_bread_delivery_day
+    SELECT business_date, day_name,
+           ROUND(net_revenue, 2) AS revenue,
+           order_count, weather_high_f, weather_category
     FROM {DAILY_TABLE}
-    WHERE business_date BETWEEN
-        CURRENT_DATE - INTERVAL 7 DAYS AND
-        CURRENT_DATE
+    WHERE business_date BETWEEN CURRENT_DATE - INTERVAL 7 DAYS AND CURRENT_DATE
     ORDER BY business_date
 """).show(10, truncate=False)
 
-print(f"\n── Model summary ──")
-print(f"  Training period:   {TRAIN_START.date()} → {train_df['ds'].max().date()}")
-print(f"  Training rows:     {len(train_df)}")
-print(f"  Revenue cap:       ${REVENUE_CAP:,.0f}/day")
-print(f"  MAE:               ${mae:,.2f}")
-print(f"  MAPE:              {mape:.1f}%")
-print(f"  R²:                {r2:.3f}")
-print(f"  MLflow run:        {run_id}")
-print(f"  Registered model:  {MODEL_NAME}")
+print(f"\n── Winner summary ({_variant_results[_WINNER_IDX]['label']}) ──")
+print(f"  Training period: {TRAIN_START.date()} → {train_df['ds'].max().date()}  ({len(train_df)} rows)")
+print(f"  train_mape: {_variant_results[_WINNER_IDX]['train_mape']}%   R²: {_variant_results[_WINNER_IDX]['train_r2']}")
+print(f"  cv_mape:    {_variant_results[_WINNER_IDX]['cv_mape']}%  (30d horizon)")
+print(f"  Run ID:     {run_id}")
 
 # COMMAND ----------
 
-# ── 12. LOG TO ACCURACY HISTORY ───────────────────────────────────────────────
+# ── 12. LOG ALL VARIANTS TO ACCURACY HISTORY ─────────────────────────────────
+# One row per variant so the Forecast Accuracy dashboard shows the full comparison.
 
 spark.sql(f"""
     CREATE TABLE IF NOT EXISTS {CATALOG}.gold.forecast_accuracy_history (
@@ -920,41 +927,45 @@ spark.sql(f"""
     COMMENT 'One row per model retrain. Tracks accuracy trends for retraining decisions.'
 """)
 
-_today_str    = str(pd.Timestamp.today().date())
-_train_max    = str(train_df['ds'].max().date())
-_cv_mape_str  = str(round(cv_mape,     2)) if cv_mape     is not None else "NULL"
-_cv_mae_str   = str(round(cv_mae,      2)) if cv_mae      is not None else "NULL"
-_cv_7d_str    = str(cv_mape_7d)            if cv_mape_7d  is not None else "NULL"
-_cv_14d_str   = str(cv_mape_14d)           if cv_mape_14d is not None else "NULL"
+_today_str = str(pd.Timestamp.today().date())
+_train_max  = str(train_df['ds'].max().date())
 
-spark.sql(f"""
-    INSERT INTO {CATALOG}.gold.forecast_accuracy_history
-    (logged_at, model_name, mlflow_run_id, training_date, training_rows,
-     training_data_through, train_mape, train_mae, train_r2,
-     cv_mape, cv_mae, cv_mape_7d, cv_mape_14d,
-     backtest_mape, backtest_mae, backtest_ci_coverage, notes)
-    VALUES (
-        current_timestamp(),
-        'revenue',
-        '{run_id}',
-        DATE '{_today_str}',
-        {len(train_df)},
-        DATE '{_train_max}',
-        {round(mape, 2)},
-        {round(mae,  2)},
-        {round(r2,   4)},
-        {_cv_mape_str},
-        {_cv_mae_str},
-        {_cv_7d_str},
-        {_cv_14d_str},
-        {round(_bt_mape,    2)},
-        {round(_bt_mae,     2)},
-        {round(_bt_ci_cover, 2)},
-        NULL
-    )
-""")
+def _sql_float(v):
+    """Return a SQL-safe float literal, or NULL for None/nan."""
+    if v is None:
+        return "NULL"
+    try:
+        if np.isnan(float(v)):
+            return "NULL"
+    except (TypeError, ValueError):
+        return "NULL"
+    return str(round(float(v), 4))
 
-print(f"✓ Revenue training run logged to {CATALOG}.gold.forecast_accuracy_history")
-print(f"  train_mape={round(mape,2)}%  "
-      f"cv_mape={round(cv_mape,2) if cv_mape is not None else 'N/A'}%  "
-      f"backtest_mape={round(_bt_mape,2)}%")
+for _vr in _variant_results:
+    spark.sql(f"""
+        INSERT INTO {CATALOG}.gold.forecast_accuracy_history
+        (logged_at, model_name, mlflow_run_id, training_date, training_rows,
+         training_data_through, train_mape, train_mae, train_r2,
+         cv_mape, cv_mae, cv_mape_7d, cv_mape_14d,
+         backtest_mape, backtest_mae, backtest_ci_coverage, notes)
+        VALUES (
+            current_timestamp(),
+            'revenue',
+            '{_vr["run_id"]}',
+            DATE '{_today_str}',
+            {len(train_df)},
+            DATE '{_train_max}',
+            {_sql_float(_vr["train_mape"])},
+            NULL,
+            {_sql_float(_vr["train_r2"])},
+            {_sql_float(_vr["cv_mape"])},
+            NULL,
+            {_sql_float(_vr["cv_mape_7d"])},
+            {_sql_float(_vr["cv_mape_14d"])},
+            {_sql_float(_vr["bt_mape"])},
+            NULL,
+            {_sql_float(_bt_ci_cover)},
+            '{_vr["label"]}'
+        )
+    """)
+    print(f"  ✓ Logged {_vr['label']}  cv_mape={_vr['cv_mape']}%  bt_mape={_vr['bt_mape']}%")
