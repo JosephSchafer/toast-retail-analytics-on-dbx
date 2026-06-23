@@ -116,7 +116,16 @@ DAILY_TABLE    = f"{CATALOG}.gold.daily_sales_summary"
 WEATHER_TABLE  = f"{CATALOG}.bronze.weather_hourly"
 
 EXPERIMENT_NAME = "toast_prophet_revenue"
-MODEL_NAME      = "toast_revenue_prophet"
+
+# UC model registry — three-level name required (catalog.schema.model).
+# The workspace legacy registry is disabled; all versions live in UC.
+# NB9 loads this model via: mlflow.prophet.load_model("models:/MODEL_NAME@production")
+MODEL_NAME      = f"{CATALOG}.default.toast_revenue_prophet"
+
+# Set UC as the registry target before any register_model() calls.
+# Must be done at module level, not inside start_run().
+import mlflow as _mlflow_init
+_mlflow_init.set_registry_uri("databricks-uc")
 
 FORECAST_DAYS   = 30
 
@@ -532,7 +541,17 @@ for _, _row in _bt_eval.sort_values('ds').iterrows():
 
 # ── 10. TRAIN PROPHET MODEL ───────────────────────────────────────────────────
 
-with mlflow.start_run(run_name="prophet_revenue_v7_split_seasonal_prior") as run:
+# Run name encodes the key architectural decisions so the Experiments UI
+# is scannable without opening individual runs.
+_run_name = (
+    f"prophet_revenue"
+    f"_{PROPHET_PARAMS['growth']}_growth"
+    f"_cps{str(PROPHET_PARAMS['changepoint_prior_scale']).replace('.','')}"
+    f"_train{str(TRAIN_START.date()).replace('-','')}"
+    f"_wknd_prior{int(8)}"  # ne_prior_weekend prior_scale — update if changed
+)
+
+with mlflow.start_run(run_name=_run_name) as run:
 
     run_id = run.info.run_id
     print(f"MLflow run started: {run_id}")
@@ -670,7 +689,7 @@ with mlflow.start_run(run_name="prophet_revenue_v7_split_seasonal_prior") as run
     for _s, _e in EXCLUDE_PERIODS:
         ax1.axvspan(_s, _e, color='#E07A5F', alpha=0.08, label='Excluded period')
 
-    ax1.set_title('Prophet Revenue Forecast — Logistic Growth with Prior Seasonality',
+    ax1.set_title(f'Prophet Revenue Forecast — {PROPHET_PARAMS["growth"].title()} Growth + Prior Seasonality',
                   fontsize=13, fontweight='bold')
     ax1.set_ylabel('Net Revenue ($)')
     ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${x:,.0f}'))
@@ -700,25 +719,76 @@ with mlflow.start_run(run_name="prophet_revenue_v7_split_seasonal_prior") as run
                          'weather_high_f', 'total_precip_in']],
         forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']],
     )
-    # Log model artifact first (no registration yet) so we can capture the version.
-    # Separating log + register avoids Unity Catalog search_model_versions limitations.
+    # Log model artifact ONLY — do not register or promote here.
+    # Registration and @production promotion happen in the cell below,
+    # AFTER reviewing this run against other candidates in the Experiments UI.
+    # This is intentional: every retrain is a candidate, not an automatic deployment.
     mlflow.prophet.log_model(
         pr_model      = model,
         artifact_path = "prophet_revenue_model",
         signature     = signature,
     )
 
-    # Register separately — mlflow.register_model returns the ModelVersion object
-    # directly, giving us the version number without needing search_model_versions.
+    # Tag this run as a candidate (not yet promoted)
+    mlflow.set_tag("status", "candidate")
+    mlflow.set_tag("model_type", "prophet")
+    mlflow.set_tag("target", "net_revenue")
+
+    print(f"\n✓ Model artifact logged (not yet registered)")
+    print(f"  Run ID:   {run_id}")
+    print(f"  Run name: {_run_name}")
+    print(f"\n  ── Next step ──")
+    print(f"  Review this run vs prior candidates in:")
+    print(f"  Experiments → {EXPERIMENT_NAME}")
+    print(f"  Key metrics to compare: cv_mape, backtest_mape, tr_r2")
+    print(f"  Then run the PROMOTION cell below to register and set @production.")
+
+# COMMAND ----------
+
+# ── 10a. PROMOTE TO @production ── RUN MANUALLY AFTER REVIEWING EXPERIMENTS UI ──
+#
+# Do NOT run this cell automatically. Steps:
+#   1. Go to Experiments → toast_prophet_revenue in the Databricks sidebar
+#   2. Compare this run's cv_mape and backtest_mape against prior versions
+#   3. If this run is the best candidate, run this cell to register and promote
+#
+# To compare programmatically:
+#   client.search_runs(experiment_ids=[exp_id], order_by=["metrics.cv_mape ASC"])
+#
+# The @production alias is what NB9 loads via:
+#   mlflow.prophet.load_model("models:/MODEL_NAME@production")
+# Changing it takes effect on the NEXT daily NB9 run.
+
+_promote = False  # ← Set to True and run this cell when ready to promote
+
+if _promote:
     _reg_client = mlflow.tracking.MlflowClient()
+
+    # Tag any existing @production version as deprecated before reassigning
+    try:
+        _old_prod = _reg_client.get_model_version_by_alias(MODEL_NAME, "production")
+        _reg_client.set_model_version_tag(MODEL_NAME, _old_prod.version, "status", "deprecated")
+        print(f"  Previous @production v{_old_prod.version} → deprecated")
+    except Exception:
+        pass  # No prior production version
+
+    # Register this run's artifact as a new version
     _mv = mlflow.register_model(f"runs:/{run_id}/prophet_revenue_model", MODEL_NAME)
+
+    # Tag the new version
+    _reg_client.set_model_version_tag(MODEL_NAME, _mv.version, "status",        "production")
+    _reg_client.set_model_version_tag(MODEL_NAME, _mv.version, "version_tag",   _run_name)
+    _reg_client.set_model_version_tag(MODEL_NAME, _mv.version, "training_date", str(pd.Timestamp.today().date()))
+
+    # Promote
     _reg_client.set_registered_model_alias(MODEL_NAME, "production", _mv.version)
     print(f"  ✓ Registered v{_mv.version} and promoted → @production alias")
-
-    print(f"\n✓ Model logged and registered")
-    print(f"  Run ID:     {run_id}")
-    print(f"  Model name: {MODEL_NAME}")
-    print(f"  View at:    Experiments → {EXPERIMENT_NAME}")
+    print(f"  Model: {MODEL_NAME}")
+    print(f"  Run:   {run_id}")
+else:
+    print("Promotion skipped (_promote=False). Set _promote=True after reviewing Experiments UI.")
+    print(f"  This run's ID: {run_id}")
+    print(f"  Run name:      {_run_name}")
 
 # COMMAND ----------
 

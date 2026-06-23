@@ -81,6 +81,7 @@ warnings.filterwarnings('ignore')
 try:
     import mlflow
     import mlflow.prophet
+    mlflow.set_registry_uri("databricks-uc")  # UC registry; model names require catalog.schema.model
     print("✓ MLflow imported")
 except ModuleNotFoundError:
     raise RuntimeError("MLflow not found.")
@@ -114,8 +115,9 @@ FORECAST_TABLE   = f"{CATALOG}.gold.daily_sales_forecast"
 ACTUALS_TABLE    = f"{CATALOG}.gold.daily_sales_summary"
 WEATHER_TABLE    = f"{CATALOG}.bronze.weather_hourly"
 
-REVENUE_MODEL_URI = "models:/toast_revenue_prophet@production"
-ORDERS_MODEL_URI  = "models:/toast_orders_prophet@production"
+# UC model registry — three-level name required (catalog.schema.model)
+REVENUE_MODEL_URI = f"models:/{CATALOG}.default.toast_revenue_prophet@production"
+ORDERS_MODEL_URI  = f"models:/{CATALOG}.default.toast_orders_prophet@production"
 
 FORECAST_DAYS = 30
 
