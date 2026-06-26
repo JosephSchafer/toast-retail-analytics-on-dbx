@@ -17,7 +17,7 @@
 # MAGIC **What this notebook produces:**
 # MAGIC `3sp_analytics_workspace.gold.forecast_features`
 # MAGIC — one row per day, with every feature the model will train on.
-# MAGIC Both the Prophet and LightGBM models read from this table.
+# MAGIC The Prophet model reads from this table.
 # MAGIC
 # MAGIC ## Feature categories we're building
 # MAGIC
@@ -142,9 +142,8 @@ spark.sql(f"""
         ds                      DATE        NOT NULL    COMMENT 'Date — named ds for Prophet compatibility (Prophet requires this column name)',
 
         -- ── Targets (what we are forecasting) ─────────────────────────────
-        -- Both targets are available for both models.
-        -- Prophet trains one model per target.
-        -- LightGBM can predict both in one pass.
+        -- Both targets are available for training.
+        -- Prophet trains one model per target (revenue model and orders model).
         y_revenue               DOUBLE                  COMMENT 'Net revenue — primary forecast target. Imputed for closure days.',
         y_orders                DOUBLE                  COMMENT 'Order count — secondary forecast target. Imputed for closure days.',
 
@@ -162,7 +161,6 @@ spark.sql(f"""
         -- Raw day-of-week (1-7) treats Monday and Sunday as far apart,
         -- but they are both near the weekend in behavior. Cyclical encoding
         -- wraps the scale so day 7 connects back to day 1 smoothly.
-        -- LightGBM handles this automatically but it helps linear models.
         dow_sin                 DOUBLE                  COMMENT 'Sine encoding of day-of-week — captures cyclical weekly pattern',
         dow_cos                 DOUBLE                  COMMENT 'Cosine encoding of day-of-week — paired with dow_sin',
         month_sin               DOUBLE                  COMMENT 'Sine encoding of month — captures cyclical yearly pattern',
@@ -203,7 +201,8 @@ spark.sql(f"""
         -- ── Lag features ───────────────────────────────────────────────────
         -- Autocorrelation analysis identified lags 1, 6, 7, 8, 14 as significant.
         -- Lag 7 is the strongest — same day last week is the best single predictor.
-        -- Used by LightGBM only (Prophet handles temporal patterns internally).
+        -- Prophet handles temporal patterns internally; lag features are available
+        -- for future gradient-boosted model experiments (see REFACTORING_BACKLOG.md).
         lag_1_revenue           DOUBLE                  COMMENT 'Net revenue 1 day ago.',
         lag_6_revenue           DOUBLE                  COMMENT 'Net revenue 6 days ago.',
         lag_7_revenue           DOUBLE                  COMMENT 'Net revenue 7 days ago (same day last week). Strongest lag predictor.',
@@ -226,7 +225,7 @@ spark.sql(f"""
         _batch_id               STRING                  COMMENT 'Batch ID for this feature engineering run.'
     )
     USING DELTA
-    COMMENT 'Gold: forecast feature table. One row per day. Consumed by Prophet and LightGBM forecast models. Rebuilt nightly after Gold sales summary.'
+    COMMENT 'Gold: forecast feature table. One row per day. Consumed by the Prophet forecast models. Rebuilt nightly after Gold sales summary.'
     TBLPROPERTIES ('quality' = 'gold', 'delta.enableChangeDataFeed' = 'true')
 """)
 
@@ -558,7 +557,7 @@ print(f"✓ Non-linear temperature features computed "
 #
 # IMPORTANT: lag features are only valid for HISTORICAL dates.
 # Future prediction rows will have null lag values — that is correct.
-# LightGBM handles null lag features gracefully.
+# Future gradient-boosted models would handle null lag features gracefully.
 
 # Sort by date to ensure shift() computes correctly
 df = df.sort_values('ds').reset_index(drop=True)
@@ -676,8 +675,8 @@ print(f"✓ Merged into {FEATURES_TABLE}")
 spark.sql(f"""
     COMMENT ON TABLE {FEATURES_TABLE} IS
     'Gold: forecast feature table. One row per day covering full history plus 16-day forward window.
-Consumed by Prophet and LightGBM forecast models — both read from this single table.
-Features include calendar signals, weather, lag values, rolling averages, and event flags.
+Consumed by the Prophet forecast models (revenue and orders). Lag features are also available
+for future gradient-boosted model experiments. Features include calendar signals, weather, lag values, rolling averages, and event flags.
 y_revenue and y_orders are imputed for closure days and null for future dates.
 training_weight column controls how each row is weighted during model training:
 1.0 = normal observed day, 0.5 = imputed closure day, 0.0 = excluded distortion/event.'
@@ -688,7 +687,7 @@ spark.sql(f"""
         'domain'  = 'retail',
         'layer'   = 'gold',
         'purpose' = 'ml_features',
-        'models'  = 'prophet_lightgbm',
+        'models'  = 'prophet',
         'refresh' = 'daily',
         'pii'     = 'false'
     )

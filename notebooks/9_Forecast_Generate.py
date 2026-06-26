@@ -53,10 +53,10 @@
 # MAGIC | v1 | 2026-03-28 | JS | Initial build — wrote to daily_sales_summary |
 # MAGIC | v3 | 2026-05-23 | JS | Split ne_seasonal_prior into ne_prior_weekday/weekend to match NB7 v7. Added exponentially-weighted rolling DOW blend (λ=0.75): 50/50 blend for days 1-7, 25/75 for days 8-14, Prophet-only for days 15-30. |
 # MAGIC | v7 | 2026-06-22 | JS | DOW multiplier (9c): weekend lookback 14→28 days (4 observations vs 2; reduces noise from single outlier weekend), switched to exp-weighted mean (λ=0.85; recent weeks count more), lowered min_obs for weekends to 1. Removed _SEASONAL_PRIOR_CAP (was 0.20): model retrained on Jan–Jun so cap suppresses rather than controls the summer signal. |
-| v6 | 2026-06-22 | JS | Replace zeroed bias correction with per-DOW recent-level multiplier (step 9c). Computes mean actual/forecast ratio over last 14 days per day-of-week; scales forward predictions. Transparent bridge correction with explicit step-down plan: reduce MULTIPLIER_SCALE to 0.5 on Sep 1 2026, disable (0.0) on Jan 1 2027, remove block entirely Jun 1 2027. |
+# MAGIC | v6 | 2026-06-22 | JS | Replace zeroed bias correction with per-DOW recent-level multiplier (step 9c). Computes mean actual/forecast ratio over last 14 days per day-of-week; scales forward predictions. Transparent bridge correction with explicit step-down plan: reduce MULTIPLIER_SCALE to 0.5 on Sep 1 2026, disable (0.0) on Jan 1 2027, remove block entirely Jun 1 2027. |
 # MAGIC | v5 | 2026-06-22 | JS | Zero out bias correction (step 9c). Model flipped to under-forecasting ~+$470/day avg in Jun 2026 after summer ramp-up. Hardcoded constants were wrong direction. Real fix is NB7 v6 retraining with Sep–Dec 2025 excluded. |
 # MAGIC | v4 | 2026-06-18 | JS | Horizon-based bias correction (step 9c). Realized accuracy analysis (n=1,409 pairs) showed consistent over-forecasting of +$161–$362/day across all horizons even after DOW blend. Correction subtracted post-blend. |
-| v2 | 2026-03-31 | JS | Retargeted to gold.daily_sales_forecast to prevent duplication |
+# MAGIC | v2 | 2026-03-31 | JS | Retargeted to gold.daily_sales_forecast to prevent duplication |
 
 # COMMAND ----------
 
@@ -273,6 +273,11 @@ future_features['is_bread_delivery_day'] = (
 # Same source data as notebook 7 (PRIOR_MONTHLY_LINEARITY), converted to 52 ISO-week
 # weights by distributing each month's proportion evenly across its days then
 # summing per week. Must match notebook 7 exactly.
+#
+# REFACTOR NOTE: This block (_PRIOR_MONTHLY_LINEARITY dict, weekly conversion, and
+# _prior_seasonal_index function) is duplicated from NB7. They must stay in sync manually
+# until Phase 1 config centralization moves both to 0_Config.py.
+# Tracked in REFACTORING_BACKLOG.md § 2.1.
 _PRIOR_MONTHLY_LINEARITY = {
     1: 0.065, 2: 0.064, 3: 0.073, 4: 0.075, 5: 0.108, 6: 0.122,
     7: 0.132, 8: 0.126, 9: 0.093, 10: 0.077, 11: 0.061, 12: 0.062,
