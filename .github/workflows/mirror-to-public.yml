@@ -201,11 +201,12 @@ jobs:
           Pushed by: ${{ github.actor }}"
           fi
 
+          # Unset the extraheader injected by actions/checkout so it doesn't
+          # override our PAT when pushing to the public repo
+          git config --unset-all http.https://github.com/.extraheader || true
+
           # Set up the remote pointing at the public repo
-          REMOTE_URL="https://x-access-token:${TOKEN}@github.com/JosephSchafer/toast-retail-analytics-on-dbx.git"
-          echo "Remote URL token length: ${#TOKEN}"
-          echo "Remote URL (redacted): https://x-access-token:[${#TOKEN} chars]@github.com/JosephSchafer/toast-retail-analytics-on-dbx.git"
-          git remote add public "${REMOTE_URL}"
+          git remote add public "https://x-access-token:${TOKEN}@github.com/JosephSchafer/toast-retail-analytics-on-dbx.git"
 
           # Force-push this branch as 'main' on the public repo.
           # --force is required because we're rewriting history with each push
