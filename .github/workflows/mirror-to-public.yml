@@ -177,6 +177,7 @@ jobs:
             exit 1
           else
             echo "✅ TOKEN is set (length: ${#TOKEN})"
+            echo "Token prefix: ${TOKEN:0:4}"
           fi
 
       - name: Push sanitized tree to public repo
@@ -201,7 +202,10 @@ jobs:
           fi
 
           # Set up the remote pointing at the public repo
-          git remote add public "https://x-access-token:${TOKEN}@github.com/JosephSchafer/toast-retail-analytics-on-dbx.git"
+          REMOTE_URL="https://x-access-token:${TOKEN}@github.com/JosephSchafer/toast-retail-analytics-on-dbx.git"
+          echo "Remote URL token length: ${#TOKEN}"
+          echo "Remote URL (redacted): https://x-access-token:[${#TOKEN} chars]@github.com/JosephSchafer/toast-retail-analytics-on-dbx.git"
+          git remote add public "${REMOTE_URL}"
 
           # Force-push this branch as 'main' on the public repo.
           # --force is required because we're rewriting history with each push
