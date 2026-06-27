@@ -168,6 +168,17 @@ jobs:
       # Contributors submit PRs to this private repo; the public repo is
       # read-only for the public.
       # -----------------------------------------------------------------------
+      - name: Debug token presence
+        env:
+          TOKEN: ${{ secrets.PUBLIC_MIRROR_TOKEN }}
+        run: |
+          if [ -z "${TOKEN}" ]; then
+            echo "❌ TOKEN is empty — secret not found or not set"
+            exit 1
+          else
+            echo "✅ TOKEN is set (length: ${#TOKEN})"
+          fi
+
       - name: Push sanitized tree to public repo
         env:
           TOKEN: ${{ secrets.PUBLIC_MIRROR_TOKEN }}
