@@ -1,0 +1,200 @@
+name: Mirror to Public Repo
+
+# Pushes a sanitized copy of this repo to the public mirror
+# (github.com/JosephSchafer/toast-retail-analytics-on-dbx) on every push to master.
+#
+# What this action does:
+#   1. Checks out the private repo
+#   2. Runs a sed-based scrub pass over all text files to replace
+#      store-specific constants with generic placeholders
+#   3. Deletes files that must never be public (CLAUDE.md, this workflow,
+#      the Databricks sync workflow, any .env files)
+#   4. Force-pushes the sanitized tree to the public repo's main branch
+#
+# Required secrets (set in private repo Settings → Secrets):
+#   PUBLIC_MIRROR_TOKEN  — a GitHub PAT scoped to the public repo with
+#                          Contents: Read & Write permission
+#                          (classic PAT with 'repo' scope also works)
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    env:
+      PUBLIC_MIRROR_TOKEN: ${{ secrets.PUBLIC_MIRROR_TOKEN }}
+    steps:
+      - name: Checkout private repo (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # -----------------------------------------------------------------------
+      # SCRUB PASS — replace every private constant with a generic placeholder.
+      # Uses sed -i over all text files tracked by git. Binary files are skipped.
+      # Add new substitutions here as new store-specific constants are introduced.
+      # -----------------------------------------------------------------------
+      - name: Scrub private constants from tracked text files
+        run: |
+          # Build the list of tracked text files (exclude binaries)
+          mapfile -t FILES < <(git ls-files | xargs file --mime-type | grep -v binary | cut -d: -f1)
+
+          echo "Scrubbing ${#FILES[@]} text files..."
+
+          # Workspace URL (also present in databricks.yml)
+          sed -i 's|4261785904697758\.8\.gcp\.databricks\.com|YOUR_WORKSPACE_HOST|g' "${FILES[@]}"
+
+          # Catalog name
+          sed -i 's|3sp_analytics_workspace|YOUR_CATALOG|g' "${FILES[@]}"
+
+          # Repos ID (numeric — must be before generic job ID scrub to avoid partial matches)
+          sed -i 's|4188838463787122|YOUR_REPOS_ID|g' "${FILES[@]}"
+
+          # Job IDs
+          sed -i 's|601248779031413|YOUR_DAILY_JOB_ID|g' "${FILES[@]}"
+          sed -i 's|982546626166369|YOUR_RETRAIN_JOB_ID|g' "${FILES[@]}"
+
+          # Email address
+          sed -i 's|joe@threesistersprovisions\.com|YOUR_EMAIL|g' "${FILES[@]}"
+
+          # Store name — full form first, then abbreviation (avoid over-matching)
+          sed -i 's|Three Sisters Provisions|[your store name]|g' "${FILES[@]}"
+          sed -i 's|Three Sisters|[your store name]|g' "${FILES[@]}"
+          # "3SP" as a standalone word (word-boundary match; avoids hitting "3SP_analytics" already replaced above)
+          sed -i 's|\b3SP\b|[store abbreviation]|g' "${FILES[@]}"
+
+          # GPS coordinates (store location)
+          # Match both the bare float and Python variable assignments
+          sed -i 's|42\.24|YOUR_LATITUDE|g' "${FILES[@]}"
+          sed -i 's|-70\.80|YOUR_LONGITUDE|g' "${FILES[@]}"
+
+          # Go-live / backfill start date — only replace the string value, not the variable name
+          sed -i 's|"2025-07-01"|"YOUR_TOAST_GOLIVE_DATE"|g' "${FILES[@]}"
+          # Also appears as a plain string in comments
+          sed -i "s|2025-07-01|YOUR_TOAST_GOLIVE_DATE|g" "${FILES[@]}"
+
+          # City name in comments, strings, and table comments
+          sed -i 's|Cohasset|[your city]|g' "${FILES[@]}"
+
+          # Google Sheets spreadsheet ID (private DQ dashboard URL)
+          sed -i 's|spreadsheets/d/[A-Za-z0-9_-]\{20,\}|spreadsheets/d/YOUR_GOOGLE_SHEET_ID|g' "${FILES[@]}"
+
+          # Secret scope name (documented in code; the scope itself is in Databricks, not here)
+          # We leave "toast_api" — it's a generic enough name that deployers will recognize
+          # the pattern. If you want to genericize it too, uncomment:
+          # sed -i 's|scope="toast_api"|scope="YOUR_SECRET_SCOPE"|g' "${FILES[@]}"
+
+          echo "Scrub complete."
+
+      # -----------------------------------------------------------------------
+      # DELETION PASS — remove files that must not appear in the public repo.
+      # These are deleted from the working tree before the push; the private
+      # repo is untouched (this job runs in a checkout copy).
+      # -----------------------------------------------------------------------
+      - name: Remove private-only files
+        run: |
+          # CLAUDE.md contains workspace URL, job IDs, email, and internal ops notes
+          rm -f CLAUDE.md
+
+          # The Databricks sync workflow is private-infrastructure-specific
+          rm -f .github/workflows/sync-databricks.yml
+
+          # This mirror workflow itself should not appear in the public repo
+          # (it references the PAT secret and the private→public relationship)
+          rm -f .github/workflows/mirror-to-public.yml
+
+          # Remove any .env files that may exist
+          find . -name ".env" -not -path "./.git/*" -delete
+          find . -name ".env.*" -not -path "./.git/*" -not -name ".env.example" -delete
+
+          # databricks.yml contains workspace host — scrub already replaced the URL,
+          # but the file also hardcodes the bundle name as "databricks-project".
+          # Replace with a generic name so deployers customize it.
+          if [ -f databricks.yml ]; then
+            sed -i 's|name: databricks-project|name: toast-retail-analytics|g' databricks.yml
+          fi
+
+          echo "Private files removed."
+
+      # -----------------------------------------------------------------------
+      # VERIFY — fail the job if any private string survived the scrub.
+      # This is the safety net. Add patterns here as you add substitutions above.
+      # -----------------------------------------------------------------------
+      - name: Verify no private data remains
+        run: |
+          FAIL=0
+
+          check() {
+            local label="$1"
+            local pattern="$2"
+            if git ls-files | xargs grep -lE "$pattern" 2>/dev/null | grep -v "^\.git" | head -5 | grep -q .; then
+              echo "❌ FAIL: $label still present in:"
+              git ls-files | xargs grep -lE "$pattern" 2>/dev/null | grep -v "^\.git"
+              FAIL=1
+            else
+              echo "✅ OK: no $label found"
+            fi
+          }
+
+          # Check all files in the working tree (not just git-tracked, since we deleted some)
+          check "workspace URL"       "4261785904697758"
+          check "catalog name"        "3sp_analytics_workspace"
+          check "Repos ID"            "4188838463787122"
+          check "daily job ID"        "601248779031413"
+          check "retrain job ID"      "982546626166369"
+          check "email address"       "joe@threesistersprovisions"
+          check "store name"          "Three Sisters"
+          check "GPS latitude"        "42\.24"
+          check "GPS longitude"       "70\.80"
+          check "go-live date"        '"2025-07-01"'
+          check "city name"           "Cohasset"
+
+          if [ $FAIL -eq 1 ]; then
+            echo ""
+            echo "Mirror aborted. Fix the scrub pass above before this will push to the public repo."
+            exit 1
+          fi
+
+          echo ""
+          echo "All checks passed. Safe to mirror."
+
+      # -----------------------------------------------------------------------
+      # PUSH — force-push the sanitized tree to the public repo.
+      # We rewrite history entirely so no private commit ever leaks through
+      # (the public repo always has exactly one commit per mirror run).
+      #
+      # NOTE: force-push to main on the public repo is intentional here.
+      # The public repo is a one-way mirror, not a collaboration target.
+      # Contributors submit PRs to this private repo; the public repo is
+      # read-only for the public.
+      # -----------------------------------------------------------------------
+      - name: Push sanitized tree to public repo
+        run: |
+          # Configure git identity for the mirror commit
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+
+          # Stage all changes from the scrub and deletion passes
+          git add -A
+
+          # Check if there's actually anything to commit
+          if git diff --cached --quiet; then
+            echo "No changes to commit (scrub produced identical output). Still pushing to keep public repo in sync."
+          else
+            git commit -m "mirror: sanitized snapshot from private repo
+
+          Source commit: ${{ github.sha }}
+          Pushed by: ${{ github.actor }}"
+          fi
+
+          # Set up the remote pointing at the public repo
+          git remote add public "https://x-access-token:${PUBLIC_MIRROR_TOKEN}@github.com/JosephSchafer/toast-retail-analytics-on-dbx.git"
+
+          # Force-push this branch as 'main' on the public repo.
+          # --force is required because we're rewriting history with each push
+          # (the public repo only ever has mirror commits, not the private history).
+          git push --force public HEAD:main
+
+          echo "✅ Public repo updated: https://github.com/JosephSchafer/toast-retail-analytics-on-dbx"
