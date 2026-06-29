@@ -331,6 +331,11 @@ elif RUN_MODE == "backfill":
         dates_to_process.append(cursor)
         cursor += datetime.timedelta(days=1)
 
+    # Nothing to do — watermark already covers the entire requested range
+    if len(dates_to_process) == 0:
+        print(f"Mode: BACKFILL — all dates already ingested (watermark={watermark}). Nothing to do.")
+        dbutils.notebook.exit("SKIPPED: all dates already ingested")
+
     # Safety cap
     if len(dates_to_process) > BACKFILL_MAX_DAYS:
         raise ValueError(
