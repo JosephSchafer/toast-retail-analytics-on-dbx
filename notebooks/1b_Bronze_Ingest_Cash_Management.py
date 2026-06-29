@@ -142,8 +142,8 @@ def fetch_cash_deposits(business_date: datetime.date, token: str) -> list:
 def get_watermark() -> datetime.date | None:
     try:
         row = spark.sql(f"""
-            SELECT last_ingested_date FROM {WATERMARK_TABLE}
-            WHERE source_key = '{WATERMARK_KEY}'
+            SELECT last_date_done FROM {WATERMARK_TABLE}
+            WHERE pipeline = '{WATERMARK_KEY}'
         """).collect()
         return row[0][0] if row else None
     except Exception:
@@ -153,10 +153,10 @@ def get_watermark() -> datetime.date | None:
 def set_watermark(date: datetime.date):
     spark.sql(f"""
         MERGE INTO {WATERMARK_TABLE} t
-        USING (SELECT '{WATERMARK_KEY}' AS source_key,
-                      DATE('{date.isoformat()}') AS last_ingested_date,
-                      current_timestamp() AS updated_at) s
-        ON t.source_key = s.source_key
+        USING (SELECT '{WATERMARK_KEY}' AS pipeline,
+                      DATE('{date.isoformat()}') AS last_date_done,
+                      current_timestamp() AS completed_at) s
+        ON t.pipeline = s.pipeline
         WHEN MATCHED THEN UPDATE SET *
         WHEN NOT MATCHED THEN INSERT *
     """)
@@ -274,7 +274,7 @@ for business_date in dates_to_process:
                     "entry_type":         e.get("type"),
                     "amount":             e.get("amount"),
                     "reason_guid":        (e.get("payoutReason") or {}).get("guid"),
-                    "no_sale_reason":     e.get("noSaleReason"),
+                    "no_sale_reason":     (e.get("noSaleReason") or {}).get("guid") if isinstance(e.get("noSaleReason"), dict) else e.get("noSaleReason"),
                     "cash_drawer_guid":   (e.get("cashDrawer") or {}).get("guid"),
                     "employee1_guid":     (e.get("employee1") or {}).get("guid"),
                     "employee2_guid":     (e.get("employee2") or {}).get("guid"),
@@ -285,7 +285,24 @@ for business_date in dates_to_process:
                     "ingestion_batch_id": batch_id
                 })
 
-            df_entries = spark.createDataFrame(entry_rows) \
+            from pyspark.sql.types import StructType, StructField, StringType, DoubleType
+            entry_schema = StructType([
+                StructField("entry_guid",         StringType(), False),
+                StructField("business_date",       StringType(), False),
+                StructField("entry_type",          StringType(), True),
+                StructField("amount",              DoubleType(), True),
+                StructField("reason_guid",         StringType(), True),
+                StructField("no_sale_reason",      StringType(), True),
+                StructField("cash_drawer_guid",    StringType(), True),
+                StructField("employee1_guid",      StringType(), True),
+                StructField("employee2_guid",      StringType(), True),
+                StructField("undoes_guid",         StringType(), True),
+                StructField("entry_date",          StringType(), True),
+                StructField("raw_json",            StringType(), False),
+                StructField("ingested_at",         StringType(), False),
+                StructField("ingestion_batch_id",  StringType(), False),
+            ])
+            df_entries = spark.createDataFrame(entry_rows, schema=entry_schema) \
                 .withColumn("business_date", F.col("business_date").cast(DateType())) \
                 .withColumn("ingested_at",   F.col("ingested_at").cast(TimestampType())) \
                 .withColumn("entry_date",    F.col("entry_date").cast(TimestampType()))
@@ -312,7 +329,18 @@ for business_date in dates_to_process:
                     "ingestion_batch_id": batch_id
                 })
 
-            df_deposits = spark.createDataFrame(deposit_rows) \
+            deposit_schema = StructType([
+                StructField("deposit_guid",        StringType(), False),
+                StructField("business_date",       StringType(), False),
+                StructField("amount",              DoubleType(), True),
+                StructField("employee_guid",       StringType(), True),
+                StructField("undoes_guid",         StringType(), True),
+                StructField("deposit_date",        StringType(), True),
+                StructField("raw_json",            StringType(), False),
+                StructField("ingested_at",         StringType(), False),
+                StructField("ingestion_batch_id",  StringType(), False),
+            ])
+            df_deposits = spark.createDataFrame(deposit_rows, schema=deposit_schema) \
                 .withColumn("business_date", F.col("business_date").cast(DateType())) \
                 .withColumn("ingested_at",   F.col("ingested_at").cast(TimestampType())) \
                 .withColumn("deposit_date",  F.col("deposit_date").cast(TimestampType()))
