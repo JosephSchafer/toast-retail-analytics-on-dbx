@@ -1,4 +1,4 @@
-# Parity Baseline — Databricks Gold (authoritative), captured 2026-07-01
+# Parity Baseline - Databricks Gold (authoritative), captured 2026-07-01
 
 Snapshot of Databricks `3sp_analytics_workspace.gold` used to validate Snowflake replication.
 Databricks is the source of truth; Snowflake numbers should converge to these (net_revenue delta < 1%/day).
@@ -13,9 +13,9 @@ Databricks is the source of truth; Snowflake numbers should converge to these (n
 | date range | 2025-09-18 → 2026-06-30 |
 
 > Note: net_revenue > gross here because gross excludes tax while net includes some components differently
-> per NB4 definitions — treat these two totals as fixed fingerprints, not a derivation to re-check.
+> per NB4 definitions - treat these two totals as fixed fingerprints, not a derivation to re-check.
 
-## Per-day net_revenue & orders — June 2026 (the reconciliation window)
+## Per-day net_revenue & orders - June 2026 (the reconciliation window)
 | business_date | net_revenue | order_count |
 |---|---:|---:|
 | 2026-06-01 | 1523.07 | 67 |

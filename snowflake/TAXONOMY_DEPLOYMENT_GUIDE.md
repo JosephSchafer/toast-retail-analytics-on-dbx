@@ -1,4 +1,4 @@
-# Taxonomy Classification on Snowflake — How It's Hosted & Deployed
+# Taxonomy Classification on Snowflake - How It's Hosted & Deployed
 
 Companion to the field use-case brief. This explains **how Cortex models actually run on Snowflake**
 (the "where is the model hosted?" question), and the exact steps to deploy this on the 3SP account.
@@ -21,7 +21,7 @@ SELECT AI_COMPLETE('llama3.1-8b', 'your prompt here');
 ```
 
 The function call is scheduled onto Snowflake-managed GPU capacity, runs **in-region against data that
-never leaves the account**, and bills as **AI_FUNCTIONS serverless credits** (token-based) — not against
+never leaves the account**, and bills as **AI_FUNCTIONS serverless credits** (token-based) - not against
 your warehouse. Your warehouse (`TSP_PIPELINE_WH`, X-Small) only does the surrounding SQL: reading the
 catalog, parsing JSON, writing results.
 
@@ -29,11 +29,11 @@ So "deploying the model" = **writing a stored procedure that calls the function.
 
 ### What you DON'T manage
 - No model weights, no GPU, no container, no serving endpoint, no autoscaling config.
-- No data egress / no external DPA — the item catalog is read in place.
+- No data egress / no external DPA - the item catalog is read in place.
 - No separate uptime: if the warehouse is up for the query, the model is available.
 
 ### What you DO manage
-- The **prompt** (the real engineering — see the AI_CLASSIFY vs AI_COMPLETE comparison).
+- The **prompt** (the real engineering - see the AI_CLASSIFY vs AI_COMPLETE comparison).
 - The **valid label set** (derived from your own taxonomy so answers are always real categories).
 - A **guardrail** (validate suggestions against the allowed set; flag off-taxonomy answers).
 - The **human-in-the-loop** review + the curated override table.
@@ -44,7 +44,7 @@ So "deploying the model" = **writing a stored procedure that calls the function.
 
 | Object | Type | Role |
 |---|---|---|
-| `REFERENCE.ITEM_CATALOG` | table | Source of truth — items + current taxonomy (loaded from Toast export) |
+| `REFERENCE.ITEM_CATALOG` | table | Source of truth - items + current taxonomy (loaded from Toast export) |
 | `DQ.SUGGEST_TAXONOMY_V2()` | stored proc | Scores all active items via `AI_COMPLETE` (llama3.1-8b) → confidence + reason |
 | `DQ.TAXONOMY_SUGGESTIONS` | table | One row/item: suggestion, confidence, reason, and human-decision columns |
 | `DQ.TAXONOMY_REVIEW_APP` | Streamlit | Native in-Snowflake review UI (accept/reject/edit) |
@@ -64,7 +64,7 @@ Everything is a managed Snowflake object. Nothing runs outside the account.
 CALL THREE_SISTERS_ANALYTICS.DQ.SUGGEST_TAXONOMY_V2();
 ```
 Model selection is literally the first argument to `AI_COMPLETE`. To try a stronger model, change
-`'llama3.1-8b'` to e.g. `'mistral-large2'` and re-run — no redeploy of infrastructure.
+`'llama3.1-8b'` to e.g. `'mistral-large2'` and re-run - no redeploy of infrastructure.
 
 ### b. Streamlit review app (native)
 ```sql
@@ -81,7 +81,7 @@ CREATE OR REPLACE STREAMLIT THREE_SISTERS_ANALYTICS.DQ.TAXONOMY_REVIEW_APP
 Open it from Snowsight → Projects → Streamlit. No hosting, no URL to manage, runs on the same X-Small WH.
 
 ### c. (Optional) schedule a re-score
-Add a task so new/edited items get re-classified after each catalog reload — mirrors the existing
+Add a task so new/edited items get re-classified after each catalog reload - mirrors the existing
 `DAILY_*` DAG pattern:
 ```sql
 CREATE OR REPLACE TASK THREE_SISTERS_ANALYTICS.DQ.WEEKLY_RESCORE_TAXONOMY
@@ -96,7 +96,7 @@ ALTER TASK THREE_SISTERS_ANALYTICS.DQ.WEEKLY_RESCORE_TAXONOMY RESUME;
 1. App writes the decision to `TAXONOMY_SUGGESTIONS` (`human_decision`, `human_category`, `reviewed_at`).
 2. On accept/edit, it MERGEs the chosen category into `REFERENCE.ITEM_CATEGORY_OVERRIDES`.
 3. Downstream (e.g. `DAILY_SALES_BY_CATEGORY`) LEFT JOINs overrides over the catalog:
-   `COALESCE(override.category, catalog.category)` — so curated fixes always win, and the raw Toast
+   `COALESCE(override.category, catalog.category)` - so curated fixes always win, and the raw Toast
    export stays untouched.
 
 This is the durable value: the model proposes at scale, the human curates the contested ~30%, and the
@@ -114,9 +114,9 @@ curated layer compounds over time.
 ## 6. Model options & when to escalate
 | Model | Use when |
 |---|---|
-| `llama3.1-8b` (used here) | Default — cheap, fast, 99%+ valid JSON, great for short-text classification |
+| `llama3.1-8b` (used here) | Default - cheap, fast, 99%+ valid JSON, great for short-text classification |
 | `mistral-large2` / `llama3.1-70b` | Ambiguous items, longer descriptions, or when you want fewer "needs a call" rows |
 | `claude-*` / `openai-*` (region-dependent) | Highest reasoning; check `AI_COMPLETE` model availability in AWS_CA_CENTRAL_1 |
-| Deterministic + `EMBED_TEXT` similarity | If you need full explainability / zero hallucination — match to nearest labeled item by vector distance |
+| Deterministic + `EMBED_TEXT` similarity | If you need full explainability / zero hallucination - match to nearest labeled item by vector distance |
 
 Swapping models is a one-token change in the proc. Start cheap, escalate only for the rows that need it.

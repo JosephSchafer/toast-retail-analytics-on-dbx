@@ -1,4 +1,4 @@
-# Refactoring Backlog — Toast Retail Analytics on Databricks
+# Refactoring Backlog - Toast Retail Analytics on Databricks
 ## Goal: Open-Source as "Toast Retail Analytics Starter"
 
 A community-deployable Databricks Asset Bundle for Toast Retail operators.
@@ -22,13 +22,13 @@ Items are grouped by phase. Within each phase, items are ordered by dependency
 
 ---
 
-## Phase 1 — Centralize Configuration (blocks everything else)
+## Phase 1 - Centralize Configuration (blocks everything else)
 
 > Right now, store-specific constants are scattered across 7+ notebooks.
 > A new deployer would have to hunt through every file to stand up their instance.
 > One config file fixes this and makes the project bundle-ready.
 
-### 1.1 — Create `config/store_config.py` (or a widget-driven config notebook)
+### 1.1 - Create `config/store_config.py` (or a widget-driven config notebook)
 **Effort:** 1 HD
 
 Extract all store-specific constants into one place:
@@ -37,15 +37,15 @@ Extract all store-specific constants into one place:
 - `STORE_OPEN_HOUR`, `STORE_CLOSE_HOUR` (hardcoded in NB4)
 - `BACKFILL_START` date (hardcoded in NB2 as `"2025-07-01"`)
 - `LOCAL_TZ` (repeated in NB4, NB9)
-- `PRIOR_MONTHLY_LINEARITY` dict (NB8 — highly store-specific seasonality priors)
-- `PROMOTION_THRESHOLD` (NB8 — auto-promote if new model beats production by this %)
+- `PRIOR_MONTHLY_LINEARITY` dict (NB8 - highly store-specific seasonality priors)
+- `PROMOTION_THRESHOLD` (NB8 - auto-promote if new model beats production by this %)
 - Prophet hyperparameter defaults (changepoint_prior_scale, weekday/weekend prior scales)
 
 Pattern: a `notebooks/0_Config.py` notebook that defines a `CONFIG` dict and
 is `%run`-included by all downstream notebooks, with every value also settable
 via Databricks widget or bundle variable override.
 
-### 1.2 — Replace all hardcoded secret scope/key names with config variables
+### 1.2 - Replace all hardcoded secret scope/key names with config variables
 **Effort:** 0.5 HD
 
 Currently hardcoded in NB1:
@@ -55,7 +55,7 @@ dbutils.secrets.get(scope="toast_api", key="toast_client_id")
 Move scope name and key names into `store_config.py`. Document the required
 secret scope structure in `SETUP.md`.
 
-### 1.3 — Standardize `run_mode` widget naming across notebooks
+### 1.3 - Standardize `run_mode` widget naming across notebooks
 **Effort:** 0.5 HD
 
 Inconsistency today:
@@ -69,9 +69,9 @@ Update job definitions and CLAUDE.md accordingly.
 
 ---
 
-## Phase 2 — Code Cleanup
+## Phase 2 - Code Cleanup
 
-### 2.1 — Remove duplicated `_prior_seasonal_index` function
+### 2.1 - Remove duplicated `_prior_seasonal_index` function
 **Effort:** 0.5 HD
 
 This function is defined identically in both NB7 (`7_Model_Prophet_Revenue.py`)
@@ -79,29 +79,29 @@ and NB9 (`9_Forecast_Generate.py`). It should live once in `0_Config.py` or a
 shared `notebooks/utils.py` and be `%run`-included. Duplication means changes
 to the prior logic must be made in two places and will silently diverge.
 
-### 2.2 — Fix NB9 changelog formatting
+### 2.2 - Fix NB9 changelog formatting
 **Effort:** 0.5 HD
 
 The v6/v2 changelog entries in NB9 are missing the `# MAGIC ` prefix so they
 render as raw Python comments in the notebook rather than Markdown. Inconsistent
 with v7/v5/v4/v3/v1 entries. Fix the formatting.
 
-### 2.3 — Audit and remove retired/diagnostic notebooks from the active tree
+### 2.3 - Audit and remove retired/diagnostic notebooks from the active tree
 **Effort:** 0.5 HD
 
 Files present in the repo that need a decision:
-- `_RETIRED_README.py` — keep as reference or delete
-- `Diagnostic_Toast_Retail_API.py` — useful for setup but shouldn't be in pipeline
-- `Test_Toast_Retail_API_Access.py` — same
-- `validate_tips_in_net_revenue.py` — one-off analysis, not pipeline
-- `8_Model_Prophet_Orders.py` — is this used? NB9 loads `toast_orders_prophet` but
+- `_RETIRED_README.py` - keep as reference or delete
+- `Diagnostic_Toast_Retail_API.py` - useful for setup but shouldn't be in pipeline
+- `Test_Toast_Retail_API_Access.py` - same
+- `validate_tips_in_net_revenue.py` - one-off analysis, not pipeline
+- `8_Model_Prophet_Orders.py` - is this used? NB9 loads `toast_orders_prophet` but
   there's no corresponding training notebook in the daily job. Needs a decision.
-- `5_EDA_Sales_Forecast.py` — exploratory, not pipeline
+- `5_EDA_Sales_Forecast.py` - exploratory, not pipeline
 
 Resolution: move non-pipeline notebooks to a `notebooks/tools/` subdirectory.
 Keep them in git (they're useful) but make the pipeline boundary clear.
 
-### 2.4 — Standardize notebook header format
+### 2.4 - Standardize notebook header format
 **Effort:** 0.5 HD
 
 NB1 and NB2 have excellent headers (table of modes, schedule, design decisions).
@@ -109,7 +109,7 @@ NB7 and NB9 have changelogs. NB6 has a detailed feature category explanation.
 NB8 is sparse. Apply a consistent header template across all pipeline notebooks:
 
 ```
-# Title — What layer and what it does
+# Title - What layer and what it does
 ## Purpose (2-3 sentences)
 ## Run modes (table)
 ## Schedule (when it runs, what depends on it)
@@ -117,8 +117,8 @@ NB8 is sparse. Apply a consistent header template across all pipeline notebooks:
 ## Change log (version | date | author | change)
 ```
 
-### 2.5 — Remove 3SP-specific item lists from Kitchen Staffing dashboard queries
-**Effort:** 1 HD  *(you noted the dashboard wasn't super useful — defer or drop)*
+### 2.5 - Remove 3SP-specific item lists from Kitchen Staffing dashboard queries
+**Effort:** 1 HD  *(you noted the dashboard wasn't super useful - defer or drop)*
 
 The hardcoded item names (Turkey Cheddar, Chicken Salad Wrap, etc.) in the
 Kitchen Staffing dashboard SQL are entirely 3SP-specific. For open-source
@@ -128,9 +128,9 @@ to come from a reference table (`reference.kitchen_items` with a
 
 ---
 
-## Phase 3 — Documentation
+## Phase 3 - Documentation
 
-### 3.1 — Write `README.md`
+### 3.1 - Write `README.md`
 **Effort:** 1 HD
 
 The repo has `CLAUDE.md` (internal instructions) but no user-facing README.
@@ -143,7 +143,7 @@ Needs:
 - Table of all tables with layer, grain, and description
 - Known limitations / first-year seasonality caveat for Prophet
 
-### 3.2 — Write `SETUP.md` — Deployer's Guide
+### 3.2 - Write `SETUP.md` - Deployer's Guide
 **Effort:** 1 HD
 
 Step-by-step for a new Toast Retail operator:
@@ -158,7 +158,7 @@ Step-by-step for a new Toast Retail operator:
 8. Create the daily job (or deploy the bundle)
 9. Tune Prophet priors after ~90 days of data
 
-### 3.3 — Write `SEASONALITY_TUNING.md`
+### 3.3 - Write `SEASONALITY_TUNING.md`
 **Effort:** 1 HD
 
 The hardest part of deploying this for a new store is that the Prophet priors
@@ -173,7 +173,7 @@ Document:
 - Recommended tuning process: run with defaults for 90 days, then use the
   Forecast Accuracy dashboard to identify systematic bias, then adjust priors
 
-### 3.4 — Add `LICENSE` file
+### 3.4 - Add `LICENSE` file
 **Effort:** 0.5 HD
 
 Add BUSL-1.1 license text. The BUSL requires specifying:
@@ -184,9 +184,9 @@ Add BUSL-1.1 license text. The BUSL requires specifying:
 
 ---
 
-## Phase 4 — Bundle (DABs)
+## Phase 4 - Bundle (DABs)
 
-### 4.1 — Create `databricks.yml` — root bundle definition
+### 4.1 - Create `databricks.yml` - root bundle definition
 **Effort:** 1 HD
 
 ```yaml
@@ -213,7 +213,7 @@ targets:
     mode: production
 ```
 
-### 4.2 — Define the daily pipeline job in bundle YAML
+### 4.2 - Define the daily pipeline job in bundle YAML
 **Effort:** 1 HD
 
 Convert job `601248779031413` into `resources/jobs/daily_pipeline.yml`:
@@ -222,13 +222,13 @@ Convert job `601248779031413` into `resources/jobs/daily_pipeline.yml`:
 - Serverless compute (no cluster config needed)
 - All `CATALOG` references replaced with `${var.catalog}`
 
-### 4.3 — Define the weekly retrain job in bundle YAML
+### 4.3 - Define the weekly retrain job in bundle YAML
 **Effort:** 0.5 HD
 
 Convert the weekly retrain job (NB7 → NB8, Monday 4am ET) into
 `resources/jobs/weekly_retrain.yml`.
 
-### 4.4 — Parameterize notebook paths in bundle
+### 4.4 - Parameterize notebook paths in bundle
 **Effort:** 0.5 HD
 
 All notebook task paths in the bundle should reference the repo-relative path
@@ -237,9 +237,9 @@ which workspace path the bundle is deployed to.
 
 ---
 
-## Phase 5 — Testing & Validation
+## Phase 5 - Testing & Validation
 
-### 5.1 — Add a `0_Bootstrap_Validate.py` notebook
+### 5.1 - Add a `0_Bootstrap_Validate.py` notebook
 **Effort:** 1 HD
 
 A setup-validation notebook that a new deployer runs once to confirm their
@@ -252,7 +252,7 @@ environment is correctly configured before running any pipeline:
 
 Exits with a pass/fail summary and clear error messages for each check.
 
-### 5.2 — Add NB10 health check coverage for new tables
+### 5.2 - Add NB10 health check coverage for new tables
 **Effort:** 0.5 HD
 
 `10_Pipeline_Health_Check.py` should verify:
@@ -263,9 +263,9 @@ Exits with a pass/fail summary and clear error messages for each check.
 
 ---
 
-## Phase 6 — Post-Open-Source
+## Phase 6 - Post-Open-Source
 
-### 6.1 — GitHub repository hygiene
+### 6.1 - GitHub repository hygiene
 **Effort:** 0.5 HD
 
 - Rename repo from `3sp-analytics` to `toast-retail-analytics` (or similar)
@@ -275,7 +275,7 @@ Exits with a pass/fail summary and clear error messages for each check.
   be public (job IDs, workspace URL, store-specific schedule notes)
 - Add `.env.example` documenting required environment variables
 
-### 6.2 — Scrub 3SP-specific constants from all notebooks
+### 6.2 - Scrub 3SP-specific constants from all notebooks
 **Effort:** 1 HD
 
 A full pass to replace every remaining 3SP-specific hardcoded value with a
@@ -286,7 +286,7 @@ config variable or a clear `# CONFIGURE: replace with your value` comment:
 - `PRIOR_MONTHLY_LINEARITY` values in NB8
 - Any remaining references to "Three Sisters Provisions" or "3SP" in notebook text
 
-### 6.3 — JosephSchafer.com positioning
+### 6.3 - JosephSchafer.com positioning
 **Effort:** ongoing
 
 The README should include a tasteful "Professional Deployment" section:
@@ -299,11 +299,11 @@ makes the connection explicit.
 
 ---
 
-## Future Ideas (not scheduled — explore when data warrants)
+## Future Ideas (not scheduled - explore when data warrants)
 
-### F.1 — LightGBM gradient-boosted revenue model
+### F.1 - LightGBM gradient-boosted revenue model
 **Context:** The feature engineering notebook (NB6) was originally designed with a
-LightGBM model in mind — lag features, cyclical DOW encoding, and training_weight
+LightGBM model in mind - lag features, cyclical DOW encoding, and training_weight
 were all built for it. The model was researched but never implemented. All the
 infrastructure is already in place.
 
@@ -320,7 +320,7 @@ LightGBM typically outperforms Prophet on short-horizon (1-7 day) forecasts.
 
 **Effort when ready:** ~2 HD for the model notebook, 0.5 HD to wire into NB8.
 
-### F.2 — Resolve `8_Model_Prophet_Orders.py` status
+### F.2 - Resolve `8_Model_Prophet_Orders.py` status
 **Context:** NB9 loads a `toast_orders_prophet@production` model from the registry,
 but `8_Model_Prophet_Orders.py` (the training notebook for it) is not in any
 scheduled job and has never been updated with the multi-variant / NB8-review pattern
@@ -335,38 +335,38 @@ applied to the revenue model (NB7). The orders model is likely stale.
 
 ---
 
-## Summary — Estimated Total Effort
+## Summary - Estimated Total Effort
 
 | Phase | Items | Effort |
 |-------|-------|--------|
-| 1 — Centralize Config | 3 items | 2 HD |
-| 2 — Code Cleanup | 5 items | 3 HD |
-| 3 — Documentation | 4 items | 3.5 HD |
-| 4 — Bundle (DABs) | 4 items | 3 HD |
-| 5 — Testing | 2 items | 1.5 HD |
-| 6 — Post-Open-Source | 3 items | 1.5 HD |
+| 1 - Centralize Config | 3 items | 2 HD |
+| 2 - Code Cleanup | 5 items | 3 HD |
+| 3 - Documentation | 4 items | 3.5 HD |
+| 4 - Bundle (DABs) | 4 items | 3 HD |
+| 5 - Testing | 2 items | 1.5 HD |
+| 6 - Post-Open-Source | 3 items | 1.5 HD |
 | **Total** | **21 items** | **~14 HD (7 focused days)** |
 
 ## Recommended Sequencing
 
 If you want to do this in chunks without blocking 3SP operations:
 
-1. **Phase 1 first** — config centralization is the dependency for everything
+1. **Phase 1 first** - config centralization is the dependency for everything
    else and also directly benefits your day-to-day work on 3SP
-2. **Phase 3 in parallel** — documentation can be written before the bundle
+2. **Phase 3 in parallel** - documentation can be written before the bundle
    exists and helps clarify what the bundle needs to do
-3. **Phase 2 next** — cleanup is satisfying and low-risk
-4. **Phase 4 when you have a clean base** — bundle on top of clean code
-5. **Phase 5 and 6 last** — polish before public announcement
+3. **Phase 2 next** - cleanup is satisfying and low-risk
+4. **Phase 4 when you have a clean base** - bundle on top of clean code
+5. **Phase 5 and 6 last** - polish before public announcement
 
 ## What to Skip / Defer
 
-- **Kitchen Staffing dashboard** — you noted it wasn't very useful. Don't
+- **Kitchen Staffing dashboard** - you noted it wasn't very useful. Don't
   invest in open-sourcing it until the concept is more proven. Leave it out
   of the bundle v1.
-- **`8_Model_Prophet_Orders.py`** — needs a decision before open-sourcing.
+- **`8_Model_Prophet_Orders.py`** - needs a decision before open-sourcing.
   If `toast_orders_prophet` is actually used by NB9, this notebook needs the
   same multi-variant + NB8-review treatment as NB7. If it's orphaned, delete it.
-- **LightGBM** — NB6 mentions "Both the Prophet and LightGBM models read from
+- **LightGBM** - NB6 mentions "Both the Prophet and LightGBM models read from
   this table" but there's no LightGBM notebook. Don't promise it in the README
   until it exists.
