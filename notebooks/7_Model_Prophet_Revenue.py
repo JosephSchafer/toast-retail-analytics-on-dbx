@@ -458,10 +458,16 @@ print(f"  View at: Databricks sidebar → Experiments → {EXPERIMENT_NAME}")
 # If the seasonal prior correctly encodes "spring is busier than winter",
 # Mar-Apr predictions should track actuals reasonably well.
 
-BACKTEST_CUTOFF = pd.Timestamp('2026-03-01')
+# Backtest = most-recent-30-day holdout (fixed 2026-07-03).
+# The old fixed cutoff (2026-03-01) trained on Jan-Feb ($1,119/day winter shoulder) to predict
+# Mar-Apr, which — after TRAIN_START moved to Jan 1 and the store ~doubled Jan→Jun — produced a
+# meaningless 47% MAPE (no ramp signal in the train window). Holding out the LAST 30 days instead
+# evaluates the model on the period we actually care about and keeps the ramp in training.
+_bt_last_obs = train_df.loc[train_df['y_revenue'].notna(), 'ds'].max()
+BACKTEST_CUTOFF = _bt_last_obs - pd.Timedelta(days=30)
 
 bt_train = train_df[train_df['ds'] < BACKTEST_CUTOFF].copy()
-bt_test  = train_df[train_df['ds'] >= BACKTEST_CUTOFF].copy()
+bt_test  = train_df[(train_df['ds'] >= BACKTEST_CUTOFF) & (train_df['ds'] <= _bt_last_obs)].copy()
 
 print(f"── Backtest: Dec-Feb train → Mar-Apr evaluation ──")
 print(f"  Train: {bt_train['ds'].min().date()} → {bt_train['ds'].max().date()} ({len(bt_train)} rows)")
@@ -821,10 +827,13 @@ for _r in _variant_results:
     print(f"    {_r['label']}: {_r['run_id']}")
 print(f"\n  → Set run_id and _promote=True in cell 10a to register and promote the winner.")
 
-# Expose the last-trained model and forecast for downstream cells (validation, history logging)
-# Update these to point at whichever variant you intend to promote.
-# Default: last variant in the loop (v10c). Change index below if winner differs.
-_WINNER_IDX = len(_variant_results) - 1  # ← change to 0 or 1 if a different variant wins
+# Expose the winning model/forecast for downstream cells (validation, history logging).
+# Winner = lowest cv_mape (the robust rolling-origin metric), matching the notebook's stated
+# sort key. Auto-selected (2026-07-03) instead of hardcoding the last variant.
+_WINNER_IDX = min(range(len(_variant_results)),
+                  key=lambda i: _variant_results[i]["cv_mape"])
+print(f"  → Auto-selected winner by lowest cv_mape: {_variant_results[_WINNER_IDX]['label']} "
+      f"(cv_mape={_variant_results[_WINNER_IDX]['cv_mape']:.1f}%)")
 model    = _variant_results[_WINNER_IDX]["model"]
 forecast = _variant_results[_WINNER_IDX]["forecast"]
 run_id   = _variant_results[_WINNER_IDX]["run_id"]
@@ -849,7 +858,23 @@ cv_mape_14d = _variant_results[_WINNER_IDX]["cv_mape_14d"]
 # The @production alias is what NB9 loads. Changing it takes effect on the next
 # daily NB9 run (or trigger NB9 manually for an immediate refresh).
 
-_promote = False  # ← Set to True after reviewing the comparison table above
+# Auto-promote gate (2026-07-03): promote the winning variant when the (now-meaningful,
+# last-30-day-holdout) backtest passes its quality bar. Guardrail keeps a human able to
+# force-skip via the promote_mode widget. Default "auto" = promote iff _pass.
+try:
+    dbutils.widgets.text("promote_mode", "auto")
+    _promote_mode = dbutils.widgets.get("promote_mode")
+except Exception:
+    _promote_mode = "auto"
+
+if _promote_mode == "never":
+    _promote = False
+elif _promote_mode == "force":
+    _promote = True
+else:  # "auto"
+    _promote = bool(_pass)  # _pass = (_bt_mape < 25 and _bt_ci_cover >= 55) from the backtest cell
+
+print(f"  Promote decision: mode={_promote_mode}, backtest _pass={_pass}, → _promote={_promote}")
 
 if _promote:
     _reg_client = mlflow.tracking.MlflowClient()
@@ -877,6 +902,23 @@ else:
     print("Promotion skipped. Set _promote=True after reviewing the comparison table.")
     print(f"  Current _WINNER_IDX={_WINNER_IDX} → {_variant_results[_WINNER_IDX]['label']}")
     print(f"  run_id = '{run_id}'")
+
+# COMMAND ----------
+
+# ── 11. RETURN METRICS (so job runs surface results without the MLflow system-table lag) ──
+import json as _json
+_exit_payload = {
+    "winner":        _variant_results[_WINNER_IDX]["label"],
+    "cv_mape":       round(float(_variant_results[_WINNER_IDX]["cv_mape"]), 2),
+    "backtest_mape": round(float(_bt_mape), 2),
+    "backtest_ci_coverage": round(float(_bt_ci_cover), 1),
+    "backtest_pass": bool(_pass),
+    "promoted":      bool(_promote),
+    "promote_mode":  _promote_mode,
+    "run_id":        run_id,
+}
+print("EXIT_METRICS " + _json.dumps(_exit_payload))
+dbutils.notebook.exit(_json.dumps(_exit_payload))
 
 # COMMAND ----------
 

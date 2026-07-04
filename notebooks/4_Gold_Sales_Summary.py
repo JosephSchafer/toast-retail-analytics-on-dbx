@@ -90,8 +90,9 @@ spark.sql(f"""
 
         -- Sales metrics
         order_count             INTEGER                 COMMENT 'Number of orders (tickets) opened in this hour',
-        gross_revenue           DOUBLE                  COMMENT 'Sum of order total_amount before discounts',
-        net_revenue             DOUBLE                  COMMENT 'Sum of order total_amount after discounts',
+        gross_revenue           DOUBLE                  COMMENT 'Pre-tax sales subtotal (= net_revenue; backward-compat, deprecate)',
+        net_revenue             DOUBLE                  COMMENT 'Pre-tax sales subtotal (tips AND tax excluded) — real sales',
+        revenue_with_tax        DOUBLE                  COMMENT 'Sales subtotal + tax (tips excluded); tax-inclusive total',
         total_discounts         DOUBLE                  COMMENT 'Sum of all discounts applied in this hour',
         avg_ticket_size         DOUBLE                  COMMENT 'Average net revenue per order in this hour',
         item_count              INTEGER                 COMMENT 'Total line items sold in this hour',
@@ -126,10 +127,11 @@ spark.sql(f"""
 
         -- Sales metrics (actuals from Silver only)
         order_count             INTEGER                 COMMENT 'Number of orders (tickets) for the day',
-        gross_revenue           DOUBLE                  COMMENT 'Total revenue before discounts',
-        net_revenue             DOUBLE                  COMMENT 'Total revenue after discounts, excluding tips',
+        gross_revenue           DOUBLE                  COMMENT 'Pre-tax sales subtotal (= net_revenue; retained for backward-compat, deprecate)',
+        net_revenue             DOUBLE                  COMMENT 'Pre-tax sales subtotal (tips AND tax excluded) — real sales',
+        revenue_with_tax        DOUBLE                  COMMENT 'Sales subtotal + tax (tips excluded); tax-inclusive total charged',
         total_discounts         DOUBLE                  COMMENT 'Total discount value applied',
-        avg_ticket_size         DOUBLE                  COMMENT 'Average net revenue per order',
+        avg_ticket_size         DOUBLE                  COMMENT 'Average pre-tax net revenue per order',
         item_count              INTEGER                 COMMENT 'Total line items sold',
 
         -- Day-of-week features (useful for dashboard annotations and model features)
@@ -194,6 +196,17 @@ spark.sql(f"""
 print(f"✓ {HOURLY_TABLE}")
 print(f"✓ {DAILY_TABLE}")
 print(f"✓ {CATEGORY_TABLE}")
+
+# ── Schema migration: revenue_with_tax (added 2026-07-01 with net/gross fix) ───
+# CREATE TABLE IF NOT EXISTS is a no-op on existing tables, and the explicit
+# MERGE set-map would ERROR on a missing target column. Add it idempotently so
+# both fresh and existing tables carry it; a full_refresh then backfills history.
+for _tbl in (DAILY_TABLE, HOURLY_TABLE):
+    _cols = [f.name for f in spark.table(_tbl).schema.fields]
+    if "revenue_with_tax" not in _cols:
+        spark.sql(f"ALTER TABLE {_tbl} ADD COLUMNS (revenue_with_tax DOUBLE "
+                  f"COMMENT 'Sales subtotal + tax (tips excluded); tax-inclusive total')")
+        print(f"  + added revenue_with_tax to {_tbl}")
 
 # COMMAND ----------
 
@@ -304,20 +317,42 @@ date_spine = spark.sql(f"""
 # the join multiplies order rows by item count, inflating revenue.
 # Revenue lives on the orders table. Item count lives on the items table.
 
+    # REVENUE CONVENTION (Toast-reconciled 2026-07-03; validated 84/90 days penny-exact vs Toast Net Sales).
+    # net_revenue = Toast "Net Sales" = pre-tax subtotal (gross_amount, tips & tax excluded, discounts &
+    #   voids already netted by Toast) MINUS gift-card sells/reloads (deferred revenue Toast excludes).
+    # revenue_with_tax = subtotal + tax (tips excluded). gross_revenue kept = net_revenue (backward-compat).
+    # Gift cards (selection_type TOAST_CARD_RELOAD/SELL etc.) live at item grain, so subtract per-day.
 orders_agg = spark.sql(f"""
+    WITH giftcards AS (
+        SELECT business_date, ROUND(SUM(receipt_line_price), 2) AS giftcard_amount
+        FROM {ITEMS_SILVER}
+        WHERE {date_filter} AND voided = false
+          AND selection_type IN ('TOAST_CARD_RELOAD','TOAST_CARD_SELL','GIFTCARD','STORED_VALUE_CARD')
+        GROUP BY business_date
+    ),
+    ord AS (
+        SELECT
+            business_date,
+            COUNT(DISTINCT order_guid)              AS order_count,
+            ROUND(SUM(gross_amount), 2)             AS gross_amount_sum,
+            ROUND(SUM(total_amount - tip_amount), 2) AS revenue_with_tax,
+            ROUND(SUM(total_discount_amount), 2)    AS total_discounts
+        FROM {ORDERS_SILVER}
+        WHERE {date_filter} AND voided = false
+        GROUP BY business_date
+    )
     SELECT
-        business_date,
-        COUNT(DISTINCT order_guid)              AS order_count,
-        ROUND(SUM(gross_amount), 2)                       AS gross_revenue,
-        ROUND(SUM(total_amount - tip_amount), 2)          AS net_revenue,
-        ROUND(SUM(total_discount_amount), 2)              AS total_discounts,
+        o.business_date,
+        o.order_count,
+        ROUND(o.gross_amount_sum - COALESCE(g.giftcard_amount, 0), 2) AS gross_revenue,
+        ROUND(o.gross_amount_sum - COALESCE(g.giftcard_amount, 0), 2) AS net_revenue,
+        o.revenue_with_tax,
+        o.total_discounts,
         ROUND(
-            SUM(total_amount - tip_amount) / NULLIF(COUNT(DISTINCT order_guid), 0),
-        2)                                                AS avg_ticket_size
-    FROM {ORDERS_SILVER}
-    WHERE {date_filter}
-      AND voided = false
-    GROUP BY business_date
+            (o.gross_amount_sum - COALESCE(g.giftcard_amount, 0)) / NULLIF(o.order_count, 0),
+        2)                                          AS avg_ticket_size
+    FROM ord o
+    LEFT JOIN giftcards g ON o.business_date = g.business_date
 """)
 
 items_agg = spark.sql(f"""
@@ -347,6 +382,7 @@ daily_actuals = spark.sql(f"""
         COALESCE(s.order_count, 0)              AS order_count,
         COALESCE(s.gross_revenue, 0.0)          AS gross_revenue,
         COALESCE(s.net_revenue, 0.0)            AS net_revenue,
+        COALESCE(s.revenue_with_tax, 0.0)       AS revenue_with_tax,
         COALESCE(s.total_discounts, 0.0)        AS total_discounts,
         COALESCE(s.avg_ticket_size, 0.0)        AS avg_ticket_size,
         COALESCE(s.item_count, 0)               AS item_count,
@@ -391,7 +427,7 @@ print(f"  Open days:   {open_count}")
 print(f"  Closed days: {closed_count} (written as zero-revenue rows)")
 
 DAILY_UPDATE_COLS = [
-    "order_count", "gross_revenue", "net_revenue",
+    "order_count", "gross_revenue", "net_revenue", "revenue_with_tax",
     "total_discounts", "avg_ticket_size", "item_count",
     "day_of_week", "day_name", "is_weekend", "is_bread_delivery_day",
     "week_of_year", "month", "year",
@@ -453,11 +489,16 @@ hourly_actuals = spark.sql(f"""
         HOUR(CONVERT_TIMEZONE('UTC', 'America/New_York', o.opened_date))
                                                 AS hour_of_day,
         COUNT(DISTINCT o.order_guid)            AS order_count,
+        -- Revenue convention (2026-07-03): net_revenue = pre-tax subtotal (see orders_agg).
+        -- NOTE: hourly does NOT subtract gift-card reloads (rare; item-grain join not worth it at
+        -- hour resolution). The DAILY table is the authoritative Toast-reconciled revenue source
+        -- and the only one feeding forecasting. Hourly may run marginally high on gift-card days.
         ROUND(SUM(o.gross_amount), 2)                          AS gross_revenue,
-        ROUND(SUM(o.total_amount - o.tip_amount), 2)           AS net_revenue,
+        ROUND(SUM(o.gross_amount), 2)                          AS net_revenue,
+        ROUND(SUM(o.total_amount - o.tip_amount), 2)           AS revenue_with_tax,
         ROUND(SUM(o.total_discount_amount), 2)                 AS total_discounts,
         ROUND(
-            SUM(o.total_amount - o.tip_amount) / NULLIF(COUNT(DISTINCT o.order_guid), 0),
+            SUM(o.gross_amount) / NULLIF(COUNT(DISTINCT o.order_guid), 0),
         2)                                                     AS avg_ticket_size
     FROM {ORDERS_SILVER} o
     WHERE o.{date_filter}
@@ -507,6 +548,7 @@ hourly_with_spine = (
         F.coalesce(hourly_actuals["order_count"],  F.lit(0)).alias("order_count"),
         F.coalesce(hourly_actuals["gross_revenue"], F.lit(0.0)).alias("gross_revenue"),
         F.coalesce(hourly_actuals["net_revenue"],   F.lit(0.0)).alias("net_revenue"),
+        F.coalesce(hourly_actuals["revenue_with_tax"], F.lit(0.0)).alias("revenue_with_tax"),
         F.coalesce(hourly_actuals["total_discounts"],F.lit(0.0)).alias("total_discounts"),
         F.coalesce(hourly_actuals["avg_ticket_size"],F.lit(0.0)).alias("avg_ticket_size"),
         F.coalesce(hourly_actuals["item_count"],    F.lit(0)).alias("item_count"),
@@ -553,7 +595,7 @@ hourly_final = (
     .select(
         hourly_with_spine["business_date"],
         hourly_with_spine["hour_of_day"],
-        "order_count", "gross_revenue", "net_revenue",
+        "order_count", "gross_revenue", "net_revenue", "revenue_with_tax",
         "total_discounts", "avg_ticket_size", "item_count",
         "temperature_f", "apparent_temperature_f",
         "weather_condition", "weather_category", "weather_code",
@@ -576,7 +618,7 @@ hourly_final = (
     .withColumn("_batch_id", F.lit(BATCH_ID))
     .select(
         "business_date", "hour_of_day", "hour_label",
-        "order_count", "gross_revenue", "net_revenue",
+        "order_count", "gross_revenue", "net_revenue", "revenue_with_tax",
         "total_discounts", "avg_ticket_size", "item_count",
         "temperature_f", "apparent_temperature_f",
         "weather_condition", "weather_category", "weather_code",
@@ -589,7 +631,7 @@ hourly_final = (
 print(f"hourly_sales_summary rows to merge: {hourly_final.count()}")
 
 HOURLY_UPDATE_COLS = [
-    "hour_label", "order_count", "gross_revenue", "net_revenue",
+    "hour_label", "order_count", "gross_revenue", "net_revenue", "revenue_with_tax",
     "total_discounts", "avg_ticket_size", "item_count",
     "temperature_f", "apparent_temperature_f",
     "weather_condition", "weather_category", "weather_code",
@@ -726,6 +768,7 @@ silver_truth = spark.sql(f"""
     SELECT
         business_date,
         COUNT(DISTINCT order_guid)               AS silver_orders,
+        -- Compare like-for-like: Gold revenue_with_tax == Silver (total_amount - tip). net_revenue is now pre-tax.
         ROUND(SUM(total_amount - tip_amount), 2) AS silver_revenue
     FROM {ORDERS_SILVER}
     WHERE {date_filter}
@@ -738,7 +781,7 @@ gold_actuals = spark.sql(f"""
     SELECT
         business_date,
         order_count                     AS gold_orders,
-        ROUND(net_revenue, 2)           AS gold_revenue,
+        ROUND(revenue_with_tax, 2)      AS gold_revenue,
         ROUND(avg_ticket_size, 2)       AS gold_avg_ticket
     FROM {DAILY_TABLE}
     WHERE business_date BETWEEN '{process_from}' AND '{yesterday}'
