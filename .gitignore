@@ -16,7 +16,12 @@ desktop.ini
 
 # Claude Code / AI dev kit — internal tooling, not project code
 .ai-dev-kit/
-.claude/
+# Ignore .claude/ EXCEPT shareable project config (settings.json + hooks).
+# settings.local.json stays ignored — it holds personal/local values incl. tokens.
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+.claude/settings.local.json
 .mcp.json
 .vscode/
 typings/

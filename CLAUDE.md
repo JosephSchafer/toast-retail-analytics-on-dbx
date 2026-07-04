@@ -1,5 +1,12 @@
 # Three Sisters Provisions — Databricks Project
 
+## Writing in Joe's voice (READ FIRST for any prose)
+Any writing produced in Joe's name (deck copy, proposals, emails, blog posts, doc prose, artifact text)
+MUST use the `joe-voice` skill. Load it BEFORE writing the first line, not after. A PostToolUse hook
+(`.claude/hooks/voice_lint.py`) hard-blocks Write on prose files (.md/.html/.txt) that contain em-dashes
+or the "isn't just X, it's Y" construction. That hook only catches those two mechanical tells; the skill
+covers register, story-first openings, and the rest. Don't lean on the hook to do the skill's job.
+
 ## Project Overview
 Daily data pipeline for Three Sisters Provisions (Cohasset, MA coastal grocery/café).
 Source: Toast POS REST API. Stack: Bronze → Silver → Gold → Platinum → Prophet forecasting.

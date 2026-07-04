@@ -96,6 +96,10 @@ jobs:
           # CLAUDE.md contains workspace URL, job IDs, email, and internal ops notes
           rm -f CLAUDE.md
 
+          # .claude/ (settings.json permission rules reference internal hosts/IPs
+          # and email; hooks are local tooling) — never mirror any of it
+          rm -rf .claude
+
           # The Databricks sync workflow is private-infrastructure-specific
           rm -f .github/workflows/sync-databricks.yml
 
