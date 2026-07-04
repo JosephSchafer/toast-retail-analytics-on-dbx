@@ -29,10 +29,11 @@ def main():
         sys.exit(0)
 
     # Meta files legitimately QUOTE the banned patterns to describe the rules:
-    # auto-memory notes, CLAUDE.md instruction files, and anything under .claude/.
+    # auto-memory notes, CLAUDE.md instruction files, skill files (SKILL.md),
+    # and anything under .claude/.
     norm = fp.replace("\\", "/").lower()
-    if ("/.claude/" in norm or norm.endswith("/claude.md")
-            or pathlib.Path(fp).name.upper() == "CLAUDE.MD"):
+    name_up = pathlib.Path(fp).name.upper()
+    if ("/.claude/" in norm or name_up in ("CLAUDE.MD", "SKILL.MD")):
         sys.exit(0)
 
     try:
