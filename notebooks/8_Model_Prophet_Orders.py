@@ -92,7 +92,16 @@ FEATURES_TABLE = f"{CATALOG}.gold.forecast_features"
 DAILY_TABLE    = f"{CATALOG}.gold.daily_sales_summary"
 
 EXPERIMENT_NAME = "toast_prophet_orders"
-MODEL_NAME      = "toast_orders_prophet"
+
+# UC model registry — three-level name required (catalog.schema.model), matching NB7
+# and NB9's loader. Fixed 2026-07-05: the one-level name rode on the legacy workspace
+# registry being MLflow's default; a serverless env update flipped the default to UC
+# and the weekly retrain job started failing on registration/search.
+MODEL_NAME      = f"{CATALOG}.default.toast_orders_prophet"
+
+# Set UC as the registry target before any register_model() calls (same as NB7).
+import mlflow as _mlflow_init
+_mlflow_init.set_registry_uri("databricks-uc")
 
 FORECAST_DAYS = 30
 TRAIN_START   = pd.Timestamp('2025-12-01')

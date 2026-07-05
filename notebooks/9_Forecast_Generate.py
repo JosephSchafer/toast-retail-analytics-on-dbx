@@ -202,7 +202,9 @@ print(f"  Run ID:   {REVENUE_MODEL_RUN_ID}")
 print(f"  CV MAPE:  {REVENUE_MODEL_CV_MAPE:.1f}%" if REVENUE_MODEL_CV_MAPE else "  CV MAPE: N/A")
 
 orders_model = mlflow.prophet.load_model(ORDERS_MODEL_URI)
-orders_mv    = client.get_model_version_by_alias("toast_orders_prophet", "production")
+# Three-level UC name (fixed 2026-07-05; one-level names depend on default-catalog
+# resolution and broke NB8 when the env's default registry flipped to UC).
+orders_mv    = client.get_model_version_by_alias(f"{CATALOG}.default.toast_orders_prophet", "production")
 orders_run   = client.get_run(orders_mv.run_id)
 ORDERS_MODEL_VERSION  = orders_mv.version
 ORDERS_MODEL_RUN_ID   = orders_mv.run_id
