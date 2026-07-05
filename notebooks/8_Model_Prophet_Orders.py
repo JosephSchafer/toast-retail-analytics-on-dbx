@@ -528,13 +528,14 @@ with mlflow.start_run(run_id=run_id):
     mlflow.set_tag("best_run", "true")
     mlflow.set_tag("selection_criterion", "cv_mape")
 
-    # Immediately promote the new version to @production so notebook 9 picks it up
+    # Immediately promote the new version to @production so notebook 9 picks it up.
+    # NOTE (fixed 2026-07-05): the UC model registry rejects search_model_versions'
+    # order_by argument (MlflowException, killed the weekly retrain job) — fetch all
+    # versions for this model and take the max client-side instead.
     _reg_client   = mlflow.tracking.MlflowClient()
-    _new_versions = _reg_client.search_model_versions(
-        f"name='{MODEL_NAME}'", order_by=["version_number DESC"], max_results=1
-    )
+    _new_versions = _reg_client.search_model_versions(f"name='{MODEL_NAME}'")
     if _new_versions:
-        _new_ver = _new_versions[0].version
+        _new_ver = max(_new_versions, key=lambda v: int(v.version)).version
         _reg_client.set_registered_model_alias(MODEL_NAME, "production", _new_ver)
         print(f"  ✓ Promoted v{_new_ver} → @production alias")
 
