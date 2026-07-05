@@ -49,7 +49,7 @@ from pyspark.sql import Window
 
 RUN_MODE = dbutils.widgets.get("run_mode")
 
-CATALOG  = "3sp_analytics_workspace"
+CATALOG  = "YOUR_CATALOG"
 
 # Source tables
 ORDERS_SILVER   = f"{CATALOG}.silver_sales.orders_silver"
@@ -116,7 +116,7 @@ spark.sql(f"""
     )
     USING DELTA
     PARTITIONED BY (business_date)
-    COMMENT 'Gold: hourly sales summary for Cohasset store. One row per hour per day covering store hours (9am-7pm) plus any hours with actual transactions outside that window. Powers the hourly revenue and traffic strip on the dashboard.'
+    COMMENT 'Gold: hourly sales summary for [your city] store. One row per hour per day covering store hours (9am-7pm) plus any hours with actual transactions outside that window. Powers the hourly revenue and traffic strip on the dashboard.'
     TBLPROPERTIES ('quality' = 'gold', 'delta.enableChangeDataFeed' = 'true')
 """)
 
@@ -718,7 +718,7 @@ print(f"✓ Merged into {CATEGORY_TABLE}")
 
 for table, description, tags in [
     (HOURLY_TABLE,
-     "Gold: hourly sales summary for the Cohasset store. One row per hour per business day. Covers store hours (9am-7pm) plus any hours with transactions outside that window. Joined to hourly weather from Open-Meteo. Powers the hourly revenue and ticket count strip on the dashboard.",
+     "Gold: hourly sales summary for the [your city] store. One row per hour per business day. Covers store hours (9am-7pm) plus any hours with transactions outside that window. Joined to hourly weather from Open-Meteo. Powers the hourly revenue and ticket count strip on the dashboard.",
      {'domain':'retail','layer':'gold','refresh':'daily','pii':'false','dashboard':'hourly_strip'}),
     (DAILY_TABLE,
      "Gold: daily sales actuals with weather. One row per business date. Actuals only — forecasts live in gold.daily_sales_forecast. Join both via platinum.daily_sales_combined for dashboards.",

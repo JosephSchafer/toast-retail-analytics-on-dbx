@@ -34,7 +34,7 @@ dbutils.widgets.dropdown(
 
 dbutils.widgets.text(
     name="backfill_start_date",
-    defaultValue="2025-07-01",
+    defaultValue="YOUR_TOAST_GOLIVE_DATE",
     label="Backfill Start Date (YYYY-MM-DD)"
 )
 
@@ -61,7 +61,7 @@ RUN_MODE           = dbutils.widgets.get("run_mode")
 BACKFILL_START_RAW = dbutils.widgets.get("backfill_start_date")
 BACKFILL_END_RAW   = dbutils.widgets.get("backfill_end_date")
 
-CATALOG = "3sp_analytics_workspace"
+CATALOG = "YOUR_CATALOG"
 SCHEMA  = "bronze"
 TABLE   = f"{CATALOG}.{SCHEMA}.monarch_bank_deposits_raw"
 

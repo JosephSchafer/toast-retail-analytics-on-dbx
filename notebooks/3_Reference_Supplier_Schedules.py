@@ -2,7 +2,7 @@
 # MAGIC %md
 # MAGIC # Reference — Supplier Schedules
 # MAGIC
-# MAGIC Creates and seeds `3sp_analytics_workspace.reference.supplier_schedules`.
+# MAGIC Creates and seeds `YOUR_CATALOG.reference.supplier_schedules`.
 # MAGIC
 # MAGIC This table is **manually maintained** — it is not updated by any automated pipeline.
 # MAGIC It tells the reorder intelligence layer when each supplier normally delivers,
@@ -29,7 +29,7 @@
 
 # COMMAND ----------
 
-CATALOG = "3sp_analytics_workspace"
+CATALOG = "YOUR_CATALOG"
 TABLE   = f"{CATALOG}.reference.supplier_schedules"
 
 # COMMAND ----------

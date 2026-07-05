@@ -1,6 +1,6 @@
 # Parity Baseline - Databricks Gold (authoritative), captured 2026-07-01
 
-Snapshot of Databricks `3sp_analytics_workspace.gold` used to validate Snowflake replication.
+Snapshot of Databricks `YOUR_CATALOG.gold` used to validate Snowflake replication.
 Databricks is the source of truth; Snowflake numbers should converge to these (net_revenue delta < 1%/day).
 
 ## daily_sales_summary (open days only, net_revenue > 0)

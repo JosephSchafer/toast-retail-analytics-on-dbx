@@ -17,7 +17,7 @@
 
 import datetime
 
-CATALOG   = "3sp_analytics_workspace"
+CATALOG   = "YOUR_CATALOG"
 TODAY     = datetime.date.today()
 YESTERDAY = TODAY - datetime.timedelta(days=1)
 

@@ -20,7 +20,7 @@
 
 # COMMAND ----------
 
-CATALOG = "3sp_analytics_workspace"
+CATALOG = "YOUR_CATALOG"
 
 # COMMAND ----------
 

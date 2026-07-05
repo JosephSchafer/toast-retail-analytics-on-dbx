@@ -24,7 +24,7 @@
 # MAGIC   Those weeks are not representative of steady-state operations.
 # MAGIC
 # MAGIC - **Logistic growth with $12,000/day cap** — foot traffic at this
-# MAGIC   location is constrained by Cohasset's population and store location.
+# MAGIC   location is constrained by [your city]'s population and store location.
 # MAGIC   Cap set at ~25% above the prior store's peak daily revenue, reflecting
 # MAGIC   a better product mix and higher average ticket size.
 # MAGIC
@@ -40,13 +40,13 @@
 # MAGIC ## Dependencies
 # MAGIC
 # MAGIC **Reads from:**
-# MAGIC - `3sp_analytics_workspace.gold.forecast_features`
-# MAGIC - `3sp_analytics_workspace.bronze.weather_hourly`
+# MAGIC - `YOUR_CATALOG.gold.forecast_features`
+# MAGIC - `YOUR_CATALOG.bronze.weather_hourly`
 # MAGIC
 # MAGIC **Writes to:**
 # MAGIC - MLflow experiment: `toast_prophet_revenue`
 # MAGIC - MLflow Model Registry: `toast_revenue_prophet`
-# MAGIC - `3sp_analytics_workspace.gold.daily_sales_summary` (forecast rows)
+# MAGIC - `YOUR_CATALOG.gold.daily_sales_summary` (forecast rows)
 # MAGIC
 # MAGIC **Upstream:** `6_Feature_Engineering` must run first
 # MAGIC **Downstream:** `11_Model_Evaluate_Register` compares this against LightGBM
@@ -111,7 +111,7 @@ print("✓ All libraries loaded")
 
 # ── 3. CONFIGURATION ──────────────────────────────────────────────────────────
 
-CATALOG        = "3sp_analytics_workspace"
+CATALOG        = "YOUR_CATALOG"
 FEATURES_TABLE = f"{CATALOG}.gold.forecast_features"
 DAILY_TABLE    = f"{CATALOG}.gold.daily_sales_summary"
 WEATHER_TABLE  = f"{CATALOG}.bronze.weather_hourly"
@@ -231,7 +231,7 @@ SPECIAL_EVENTS = {
     '2025-12-13': ('Town Stroll',         'PLANNED_EVENT',      -1, 0),
     '2026-03-02': ('Wine Tasting',        'REVENUE_DISTORTION',  0, 0),
     '2025-12-11': ('Dec event / unknown', 'ORGANIC_EVENT',       0, 0),
-    # Coastal summer holidays — high-traffic days for Cohasset (beach town).
+    # Coastal summer holidays — high-traffic days for [your city] (beach town).
     # lower_window=-1 captures the eve (e.g. Sunday before Memorial Day, July 3).
     '2026-05-25': ('Memorial Day',        'COASTAL_HOLIDAY',    -1, 0),
     '2026-07-04': ('Independence Day',    'COASTAL_HOLIDAY',    -1, 1),
@@ -897,7 +897,7 @@ if _promote:
     print(f"  Variant: {_winning_label}")
     print(f"  Run ID:  {run_id}")
     print(f"  Model:   {MODEL_NAME}")
-    print(f"\n  Next: trigger NB9 (job 601248779031413 task forecast_generate) to regenerate forecasts.")
+    print(f"\n  Next: trigger NB9 (job YOUR_DAILY_JOB_ID task forecast_generate) to regenerate forecasts.")
 else:
     print("Promotion skipped. Set _promote=True after reviewing the comparison table.")
     print(f"  Current _WINNER_IDX={_WINNER_IDX} → {_variant_results[_WINNER_IDX]['label']}")

@@ -1,5 +1,5 @@
 # ============================================================================
-# Three Sisters — Taxonomy Review (Streamlit in Snowflake)
+# [your store name] — Taxonomy Review (Streamlit in Snowflake)
 # Human-in-the-loop review of Cortex taxonomy suggestions. Runs natively inside
 # Snowflake (no hosting/deploy infra). Reads DQ.TAXONOMY_SUGGESTIONS, captures
 # accept/reject/edit decisions back to the same table, and can push accepted

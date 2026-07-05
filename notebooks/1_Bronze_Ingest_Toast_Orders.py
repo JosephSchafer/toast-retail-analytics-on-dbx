@@ -3,7 +3,7 @@
 # MAGIC # Bronze — Ingest Toast Orders
 # MAGIC
 # MAGIC Writes raw order data from the Toast `/orders/v2/ordersBulk` API into a Delta table
-# MAGIC at `3sp_analytics_workspace.bronze.toast_orders_raw`.
+# MAGIC at `YOUR_CATALOG.bronze.toast_orders_raw`.
 # MAGIC
 # MAGIC **Two modes — controlled by the `run_mode` widget:**
 # MAGIC
@@ -33,7 +33,7 @@ dbutils.widgets.dropdown(
 
 dbutils.widgets.text(
     name="backfill_start_date",
-    defaultValue="2025-07-01",
+    defaultValue="YOUR_TOAST_GOLIVE_DATE",
     label="Backfill Start Date (YYYY-MM-DD)"
 )
 
@@ -73,7 +73,7 @@ TOAST_ORDERS_URL = "https://ws.toasttab.com/orders/v2/ordersBulk"
 TOAST_PAGE_SIZE  = 100
 
 # --- Databricks ---
-CATALOG   = "3sp_analytics_workspace"
+CATALOG   = "YOUR_CATALOG"
 SCHEMA    = "bronze"
 TABLE     = "toast_orders_raw"
 FULL_TABLE_NAME = f"{CATALOG}.{SCHEMA}.{TABLE}"

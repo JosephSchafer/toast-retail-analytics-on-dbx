@@ -24,7 +24,7 @@
     "pause_status": "UNPAUSED"
   },
   "email_notifications": {
-    "on_failure": ["joe@threesistersprovisions.com"]
+    "on_failure": ["YOUR_EMAIL"]
   },
   "tags": {
     "layer": "bronze",

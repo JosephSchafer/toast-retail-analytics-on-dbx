@@ -3,7 +3,7 @@
 # MAGIC # Bronze — Ingest Toast Cash Management
 # MAGIC
 # MAGIC Pulls cash drawer entries and declared deposits from the Toast Cash Management API
-# MAGIC and writes them to Delta tables in `3sp_analytics_workspace.bronze`.
+# MAGIC and writes them to Delta tables in `YOUR_CATALOG.bronze`.
 # MAGIC
 # MAGIC **Two modes — controlled by the `run_mode` widget:**
 # MAGIC
@@ -32,7 +32,7 @@ dbutils.widgets.dropdown(
 
 dbutils.widgets.text(
     name="backfill_start_date",
-    defaultValue="2025-07-01",
+    defaultValue="YOUR_TOAST_GOLIVE_DATE",
     label="Backfill Start Date (YYYY-MM-DD)"
 )
 
@@ -62,7 +62,7 @@ BACKFILL_END_RAW   = dbutils.widgets.get("backfill_end_date")
 TOAST_AUTH_URL     = "https://ws.toasttab.com/authentication/v1/authentication/login"
 TOAST_CASHMGMT_URL = "https://ws.toasttab.com/cashmgmt/v1"
 
-CATALOG    = "3sp_analytics_workspace"
+CATALOG    = "YOUR_CATALOG"
 SCHEMA     = "bronze"
 ENTRIES_TABLE  = f"{CATALOG}.{SCHEMA}.toast_cash_entries_raw"
 DEPOSITS_TABLE = f"{CATALOG}.{SCHEMA}.toast_cash_deposits_raw"

@@ -35,13 +35,13 @@
 # MAGIC ## Dependencies
 # MAGIC
 # MAGIC **Reads from:**
-# MAGIC - `3sp_analytics_workspace.gold.forecast_features`
-# MAGIC - `3sp_analytics_workspace.reference.store_events`
+# MAGIC - `YOUR_CATALOG.gold.forecast_features`
+# MAGIC - `YOUR_CATALOG.reference.store_events`
 # MAGIC - MLflow Model Registry: `toast_revenue_prophet@production`
 # MAGIC - MLflow Model Registry: `toast_orders_prophet@production`
 # MAGIC
 # MAGIC **Writes to:**
-# MAGIC - `3sp_analytics_workspace.gold.daily_sales_forecast`
+# MAGIC - `YOUR_CATALOG.gold.daily_sales_forecast`
 # MAGIC
 # MAGIC **Upstream:** `4_Gold_Sales_Summary` and both model notebooks must run first
 # MAGIC **Downstream:** `platinum.daily_sales_combined` view reads from this table
@@ -109,7 +109,7 @@ dbutils.widgets.dropdown(
 
 RUN_MODE = dbutils.widgets.get("run_mode")
 
-CATALOG          = "3sp_analytics_workspace"
+CATALOG          = "YOUR_CATALOG"
 FEATURES_TABLE   = f"{CATALOG}.gold.forecast_features"
 FORECAST_TABLE   = f"{CATALOG}.gold.daily_sales_forecast"
 ACTUALS_TABLE    = f"{CATALOG}.gold.daily_sales_summary"

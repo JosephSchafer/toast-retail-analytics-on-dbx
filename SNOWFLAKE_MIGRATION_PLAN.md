@@ -1,4 +1,4 @@
-# Three Sisters Provisions - Databricks → Snowflake Replication Plan
+# [your store name] - Databricks → Snowflake Replication Plan
 
 **Goal:** Replicate the *business purpose* of the Databricks pipeline on Snowflake, using Snowflake-native
 best practices, at a monthly spend at or below the ~$50/mo Databricks baseline. Run both platforms in
@@ -90,7 +90,7 @@ PLATINUM
 - [ ] Confirm `TSP_EXTERNAL_ACCESS` integration + secrets (Toast id/secret/guid) are valid; add a
       **Monarch** secret + external-access rule for cash audit.
 - [ ] Set `TSP_PIPELINE_WH` auto-suspend to 60s (already), STATEMENT_TIMEOUT sane default.
-- [ ] Create **email notification integration** verified to joe@threesistersprovisions.com (needed by SEND_* procs).
+- [ ] Create **email notification integration** verified to YOUR_EMAIL (needed by SEND_* procs).
 - [ ] Snapshot current Databricks Gold row counts/values as the **parity baseline** (this file's audit table).
 
 ### Phase 1 - Fix & complete Sales + Forecasting (core, mostly done) (1–2 days)

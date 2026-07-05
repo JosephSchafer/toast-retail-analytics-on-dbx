@@ -76,7 +76,7 @@ import datetime
 from delta.tables import DeltaTable
 from pyspark.sql import functions as F
 
-CATALOG = "3sp_analytics_workspace"
+CATALOG = "YOUR_CATALOG"
 TABLE   = f"{CATALOG}.reference.store_events"
 
 ACTION       = dbutils.widgets.get("action").strip()
@@ -282,7 +282,7 @@ if ACTION != "view":
 # MAGIC **Add a new Town Stroll for next December:**
 # MAGIC - Action: `upsert`
 # MAGIC - Event Date: `2026-12-12`
-# MAGIC - Event Name: `Cohasset Village Town Stroll`
+# MAGIC - Event Name: `[your city] Village Town Stroll`
 # MAGIC - Event Type: `PLANNED_EVENT`
 # MAGIC - Lower Window: `-1`
 # MAGIC - Notes: `Annual holiday stroll`

@@ -32,10 +32,10 @@ Items are grouped by phase. Within each phase, items are ordered by dependency
 **Effort:** 1 HD
 
 Extract all store-specific constants into one place:
-- `CATALOG` name (`3sp_analytics_workspace` → parameterized)
-- `LATITUDE`, `LONGITUDE`, `TIMEZONE` (Cohasset-specific in NB2)
+- `CATALOG` name (`YOUR_CATALOG` → parameterized)
+- `LATITUDE`, `LONGITUDE`, `TIMEZONE` ([your city]-specific in NB2)
 - `STORE_OPEN_HOUR`, `STORE_CLOSE_HOUR` (hardcoded in NB4)
-- `BACKFILL_START` date (hardcoded in NB2 as `"2025-07-01"`)
+- `BACKFILL_START` date (hardcoded in NB2 as `"YOUR_TOAST_GOLIVE_DATE"`)
 - `LOCAL_TZ` (repeated in NB4, NB9)
 - `PRIOR_MONTHLY_LINEARITY` dict (NB8 - highly store-specific seasonality priors)
 - `PROMOTION_THRESHOLD` (NB8 - auto-promote if new model beats production by this %)
@@ -117,11 +117,11 @@ NB8 is sparse. Apply a consistent header template across all pipeline notebooks:
 ## Change log (version | date | author | change)
 ```
 
-### 2.5 - Remove 3SP-specific item lists from Kitchen Staffing dashboard queries
+### 2.5 - Remove [store abbreviation]-specific item lists from Kitchen Staffing dashboard queries
 **Effort:** 1 HD  *(you noted the dashboard wasn't super useful - defer or drop)*
 
 The hardcoded item names (Turkey Cheddar, Chicken Salad Wrap, etc.) in the
-Kitchen Staffing dashboard SQL are entirely 3SP-specific. For open-source
+Kitchen Staffing dashboard SQL are entirely [store abbreviation]-specific. For open-source
 publication, this dashboard either needs to be dropped, or the item list needs
 to come from a reference table (`reference.kitchen_items` with a
 `staffing_category` column) that a deployer populates for their own menu.
@@ -216,7 +216,7 @@ targets:
 ### 4.2 - Define the daily pipeline job in bundle YAML
 **Effort:** 1 HD
 
-Convert job `601248779031413` into `resources/jobs/daily_pipeline.yml`:
+Convert job `YOUR_DAILY_JOB_ID` into `resources/jobs/daily_pipeline.yml`:
 - Task order: NB1 → NB2 → NB4 → NB6 → NB9 → NB10
 - Schedules, retries, email notifications
 - Serverless compute (no cluster config needed)
@@ -271,20 +271,20 @@ Exits with a pass/fail summary and clear error messages for each check.
 - Rename repo from `3sp-analytics` to `toast-retail-analytics` (or similar)
 - Add `.github/ISSUE_TEMPLATE/` with bug report and feature request templates
 - Add `CONTRIBUTING.md` (how to submit a PR, coding style, test requirements)
-- Update `CLAUDE.md` to remove 3SP-specific operational details that shouldn't
+- Update `CLAUDE.md` to remove [store abbreviation]-specific operational details that shouldn't
   be public (job IDs, workspace URL, store-specific schedule notes)
 - Add `.env.example` documenting required environment variables
 
-### 6.2 - Scrub 3SP-specific constants from all notebooks
+### 6.2 - Scrub [store abbreviation]-specific constants from all notebooks
 **Effort:** 1 HD
 
-A full pass to replace every remaining 3SP-specific hardcoded value with a
+A full pass to replace every remaining [store abbreviation]-specific hardcoded value with a
 config variable or a clear `# CONFIGURE: replace with your value` comment:
-- `42.24` / `-70.80` (Cohasset coordinates in NB2)
-- `"2025-07-01"` (Toast go-live date)
-- `3sp_analytics_workspace` catalog name (should all be via config by Phase 1)
+- `YOUR_LATITUDE` / `YOUR_LONGITUDE` ([your city] coordinates in NB2)
+- `"YOUR_TOAST_GOLIVE_DATE"` (Toast go-live date)
+- `YOUR_CATALOG` catalog name (should all be via config by Phase 1)
 - `PRIOR_MONTHLY_LINEARITY` values in NB8
-- Any remaining references to "Three Sisters Provisions" or "3SP" in notebook text
+- Any remaining references to "[your store name]" or "[store abbreviation]" in notebook text
 
 ### 6.3 - JosephSchafer.com positioning
 **Effort:** ongoing
@@ -349,10 +349,10 @@ applied to the revenue model (NB7). The orders model is likely stale.
 
 ## Recommended Sequencing
 
-If you want to do this in chunks without blocking 3SP operations:
+If you want to do this in chunks without blocking [store abbreviation] operations:
 
 1. **Phase 1 first** - config centralization is the dependency for everything
-   else and also directly benefits your day-to-day work on 3SP
+   else and also directly benefits your day-to-day work on [store abbreviation]
 2. **Phase 3 in parallel** - documentation can be written before the bundle
    exists and helps clarify what the bundle needs to do
 3. **Phase 2 next** - cleanup is satisfying and low-risk

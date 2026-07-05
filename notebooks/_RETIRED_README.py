@@ -5,7 +5,7 @@
 # MAGIC All pipeline notebooks previously in `/Workspace/Shared/Sales & Weather Repo/`
 # MAGIC are now managed from the Git repository and run from:
 # MAGIC
-# MAGIC **`/Repos/joe@threesistersprovisions.com/3sp-analytics/notebooks/`**
+# MAGIC **`/Repos/YOUR_EMAIL/3sp-analytics/notebooks/`**
 # MAGIC
 # MAGIC ## Why
 # MAGIC
@@ -17,7 +17,7 @@
 # MAGIC ## Where to find the notebooks
 # MAGIC
 # MAGIC - **GitHub:** https://github.com/viridia-joe/3sp-analytics/tree/master/notebooks
-# MAGIC - **Databricks:** Workspace → Repos → joe@threesistersprovisions.com → 3sp-analytics → notebooks
+# MAGIC - **Databricks:** Workspace → Repos → YOUR_EMAIL → 3sp-analytics → notebooks
 # MAGIC
 # MAGIC ## Do not edit notebooks in /Workspace/Shared/
 # MAGIC

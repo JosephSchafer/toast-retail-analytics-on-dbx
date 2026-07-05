@@ -24,7 +24,7 @@
 # MAGIC ## Dependencies
 # MAGIC
 # MAGIC **Writes to:**
-# MAGIC - `3sp_analytics_workspace.reference.store_events`
+# MAGIC - `YOUR_CATALOG.reference.store_events`
 # MAGIC
 # MAGIC **Downstream:** `6_Feature_Engineering`, `7_Model_Prophet_Revenue`,
 # MAGIC `8_Model_Prophet_Orders` all read from this table.
@@ -39,7 +39,7 @@
 
 # ── 1. CONFIGURATION ──────────────────────────────────────────────────────────
 
-CATALOG   = "3sp_analytics_workspace"
+CATALOG   = "YOUR_CATALOG"
 SCHEMA    = "reference"
 TABLE     = f"{CATALOG}.{SCHEMA}.store_events"
 
@@ -97,11 +97,11 @@ events = [
     # ── Historical events ─────────────────────────────────────────────────────
     {
         "event_date":   "2025-12-13",
-        "event_name":   "Cohasset Village Town Stroll",
+        "event_name":   "[your city] Village Town Stroll",
         "event_type":   "PLANNED_EVENT",
         "lower_window": -1,     # effect starts day before (pre-event shopping)
         "upper_window": 0,
-        "notes":        "Annual holiday event in Cohasset village. High foot traffic, many small tickets. Real demand signal — keep in training. Prophet holiday flag applied.",
+        "notes":        "Annual holiday event in [your city] village. High foot traffic, many small tickets. Real demand signal — keep in training. Prophet holiday flag applied.",
         "is_active":    True,
     },
     {

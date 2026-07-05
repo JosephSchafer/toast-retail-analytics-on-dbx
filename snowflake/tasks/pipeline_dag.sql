@@ -1,5 +1,5 @@
 -- ============================================================================
--- Three Sisters daily pipeline — Snowflake Task DAG on TSP_PIPELINE_WH.
+-- [your store name] daily pipeline — Snowflake Task DAG on TSP_PIPELINE_WH.
 -- Mirrors the Databricks job order. Serverless-free: uses the X-Small WH
 -- (auto-suspend 60s) so credit use stays minimal. Resource Monitor caps spend.
 --
@@ -41,7 +41,7 @@ BEGIN
   END IF;
 
   IF (v_issues <> '') THEN
-    CALL SYSTEM$SEND_EMAIL('TSP_EMAIL_REPORTS','joe@threesistersprovisions.com',
+    CALL SYSTEM$SEND_EMAIL('TSP_EMAIL_REPORTS','YOUR_EMAIL',
       'TSP Snowflake pipeline health WARNING',
       'Pipeline health check found issues: ' || :v_issues);
     RETURN 'WARN: ' || :v_issues;

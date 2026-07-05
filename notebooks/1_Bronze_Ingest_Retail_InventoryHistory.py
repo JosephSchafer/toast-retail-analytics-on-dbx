@@ -3,7 +3,7 @@
 # MAGIC # Bronze — Ingest Toast Retail Inventory History
 # MAGIC
 # MAGIC Writes raw inventory adjustment events from the Toast Retail API
-# MAGIC `/v1/inventoryHistory/search` into `3sp_analytics_workspace.bronze.toast_inventory_history_raw`.
+# MAGIC `/v1/inventoryHistory/search` into `YOUR_CATALOG.bronze.toast_inventory_history_raw`.
 # MAGIC
 # MAGIC | Mode | What it does |
 # MAGIC |---|---|
@@ -28,7 +28,7 @@ dbutils.widgets.dropdown(
 )
 dbutils.widgets.text(
     name="backfill_start_date",
-    defaultValue="2025-07-01",
+    defaultValue="YOUR_TOAST_GOLIVE_DATE",
     label="Backfill Start Date (YYYY-MM-DD)"
 )
 dbutils.widgets.text(
@@ -65,7 +65,7 @@ BACKFILL_END_RAW   = dbutils.widgets.get("backfill_end_date")
 TOAST_AUTH_URL     = "https://ws.toasttab.com/authentication/v1/authentication/login"
 TOAST_INV_HIST_URL = "https://ws.toasttab.com/retail/v1/inventoryHistory/search"
 
-CATALOG         = "3sp_analytics_workspace"
+CATALOG         = "YOUR_CATALOG"
 FULL_TABLE_NAME = f"{CATALOG}.bronze.toast_inventory_history_raw"
 WATERMARK_TABLE = f"{CATALOG}.bronze.ingestion_watermark"
 

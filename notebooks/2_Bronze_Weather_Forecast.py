@@ -2,15 +2,15 @@
 # MAGIC %md
 # MAGIC # Bronze — Weather Forecast Ingestion (Open-Meteo Forecast API)
 # MAGIC
-# MAGIC Fetches hourly weather forecast data for Cohasset, MA and merges it into
-# MAGIC `3sp_analytics_workspace.bronze.weather_hourly` — the same table used by
+# MAGIC Fetches hourly weather forecast data for [your city], MA and merges it into
+# MAGIC `YOUR_CATALOG.bronze.weather_hourly` — the same table used by
 # MAGIC the historical archive notebook.
 # MAGIC
 # MAGIC **How this fits the pipeline:**
 # MAGIC
 # MAGIC | Notebook | Source | Coverage | Runs |
 # MAGIC |---|---|---|---|
-# MAGIC | `1_Bronze_Weather_Ingestion` | Open-Meteo Archive | 2025-07-01 → ~5 days ago | Daily 01:00 AM |
+# MAGIC | `1_Bronze_Weather_Ingestion` | Open-Meteo Archive | YOUR_TOAST_GOLIVE_DATE → ~5 days ago | Daily 01:00 AM |
 # MAGIC | `2_Bronze_Weather_Forecast` (this one) | Open-Meteo Forecast | ~3 days ago → +16 days | Daily 01:15 AM |
 # MAGIC
 # MAGIC The two notebooks share the same table and MERGE on `time`. Where they
@@ -39,9 +39,9 @@ from pyspark.sql import functions as F
 
 # ── 2. CONFIGURATION ──────────────────────────────────────────────────────────
 
-# Cohasset village coordinates — must match archive notebook exactly
-LATITUDE  = 42.24
-LONGITUDE = -70.80
+# [your city] village coordinates — must match archive notebook exactly
+LATITUDE  = YOUR_LATITUDE
+LONGITUDE = YOUR_LONGITUDE
 TIMEZONE  = "America/New_York"
 
 # Open-Meteo forecast endpoint
@@ -65,7 +65,7 @@ HOURLY_PARAMS = ",".join([
 PAST_DAYS    = 3
 FORECAST_DAYS = 16   # Open-Meteo max; covers well beyond the 7-day sales forecast need
 
-CATALOG    = "3sp_analytics_workspace"
+CATALOG    = "YOUR_CATALOG"
 SCHEMA     = "bronze"
 TABLE      = "weather_hourly"
 FULL_TABLE = f"{CATALOG}.{SCHEMA}.{TABLE}"

@@ -16,7 +16,7 @@
 
 # COMMAND ----------
 
-CATALOG = "3sp_analytics_workspace"
+CATALOG = "YOUR_CATALOG"
 SILVER  = f"{CATALOG}.silver_sales.orders_silver"
 GOLD    = f"{CATALOG}.gold.daily_sales_summary"
 

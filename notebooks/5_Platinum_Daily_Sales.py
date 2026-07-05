@@ -40,7 +40,7 @@ from pyspark.sql import functions as F
 
 # ── 2. CONFIGURATION ──────────────────────────────────────────────────────────
 
-CATALOG          = "3sp_analytics_workspace"
+CATALOG          = "YOUR_CATALOG"
 ACTUALS_TABLE    = f"{CATALOG}.gold.daily_sales_summary"
 FORECAST_TABLE   = f"{CATALOG}.gold.daily_sales_forecast"
 PLATINUM_SCHEMA  = f"{CATALOG}.platinum"

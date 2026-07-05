@@ -2,8 +2,8 @@
 # MAGIC %md
 # MAGIC # Bronze — Weather Ingestion (Open-Meteo Historical Archive)
 # MAGIC
-# MAGIC Ingests hourly historical weather data for Cohasset, MA into
-# MAGIC `3sp_analytics_workspace.bronze.weather_hourly`.
+# MAGIC Ingests hourly historical weather data for [your city], MA into
+# MAGIC `YOUR_CATALOG.bronze.weather_hourly`.
 # MAGIC
 # MAGIC **Data source:** Open-Meteo Historical Archive API (free, no API key required)
 # MAGIC https://open-meteo.com/en/docs/historical-weather-api
@@ -37,9 +37,9 @@ from pyspark.sql import functions as F
 
 # ── 2. CONFIGURATION ──────────────────────────────────────────────────────────
 
-# Cohasset village coordinates
-LATITUDE  = 42.24
-LONGITUDE = -70.80
+# [your city] village coordinates
+LATITUDE  = YOUR_LATITUDE
+LONGITUDE = YOUR_LONGITUDE
 TIMEZONE  = "America/New_York"
 
 # Open-Meteo archive endpoint
@@ -66,13 +66,13 @@ HOURLY_PARAMS = ",".join([
 ])
 
 # Destination — aligned with main pipeline catalog
-CATALOG      = "3sp_analytics_workspace"
+CATALOG      = "YOUR_CATALOG"
 SCHEMA       = "bronze"
 TABLE        = "weather_hourly"
 FULL_TABLE   = f"{CATALOG}.{SCHEMA}.{TABLE}"
 
 # Historical backfill start — aligned with Toast go-live
-BACKFILL_START = "2025-07-01"
+BACKFILL_START = "YOUR_TOAST_GOLIVE_DATE"
 
 # Open-Meteo archive lags ~5 days. Don't request beyond this to avoid
 # empty responses that could corrupt the watermark.
@@ -119,7 +119,7 @@ spark.sql(f"""
     )
     USING DELTA
     PARTITIONED BY (date)
-    COMMENT 'Bronze: hourly historical weather for Cohasset MA from Open-Meteo archive. Covers Toast go-live (2025-07-01) onwards.'
+    COMMENT 'Bronze: hourly historical weather for [your city] MA from Open-Meteo archive. Covers Toast go-live (YOUR_TOAST_GOLIVE_DATE) onwards.'
     TBLPROPERTIES (
         'delta.enableChangeDataFeed' = 'true',
         'quality' = 'bronze'
@@ -302,8 +302,8 @@ print(f"✓ Merged into {FULL_TABLE}")
 
 spark.sql(f"""
     COMMENT ON TABLE {FULL_TABLE} IS
-    'Bronze: hourly historical weather observations for Cohasset MA (lat 42.24, lon -70.80).
-Source: Open-Meteo Historical Archive API (free, no key required). Covers 2025-07-01 onwards.
+    'Bronze: hourly historical weather observations for [your city] MA (lat YOUR_LATITUDE, lon YOUR_LONGITUDE).
+Source: Open-Meteo Historical Archive API (free, no key required). Covers YOUR_TOAST_GOLIVE_DATE onwards.
 Updated daily — Open-Meteo archive lags ~5 days behind real-time.
 Used as input to the sales forecast model and the Gold weather summary table.
 Join to gold.daily_sales_summary on date for weather-correlated sales analysis.'

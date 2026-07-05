@@ -2,7 +2,7 @@
 # MAGIC %md
 # MAGIC # Silver — Transform Toast Orders
 # MAGIC
-# MAGIC Reads from `3sp_analytics_workspace.bronze.toast_orders_raw` and produces two
+# MAGIC Reads from `YOUR_CATALOG.bronze.toast_orders_raw` and produces two
 # MAGIC clean, typed Silver tables:
 # MAGIC
 # MAGIC | Table | Grain | Description |
@@ -55,7 +55,7 @@ from pyspark.sql.types import (
 
 RUN_MODE = dbutils.widgets.get("run_mode")
 
-CATALOG         = "3sp_analytics_workspace"
+CATALOG         = "YOUR_CATALOG"
 BRONZE_SCHEMA   = "bronze"
 SILVER_SCHEMA   = "silver_sales"
 

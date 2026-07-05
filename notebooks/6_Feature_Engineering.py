@@ -15,7 +15,7 @@
 # MAGIC form the model needs.
 # MAGIC
 # MAGIC **What this notebook produces:**
-# MAGIC `3sp_analytics_workspace.gold.forecast_features`
+# MAGIC `YOUR_CATALOG.gold.forecast_features`
 # MAGIC — one row per day, with every feature the model will train on.
 # MAGIC The Prophet model reads from this table.
 # MAGIC
@@ -32,8 +32,8 @@
 # MAGIC
 # MAGIC ## TODO: Future features (not yet implemented)
 # MAGIC
-# MAGIC - **Cohasset school calendar** — no-school days and half days likely
-# MAGIC   drive meaningful foot traffic increases. Source: Cohasset Public Schools
+# MAGIC - **[your city] school calendar** — no-school days and half days likely
+# MAGIC   drive meaningful foot traffic increases. Source: [your city] Public Schools
 # MAGIC   annual PDF calendar. Implementation: manual CSV → Unity Catalog reference
 # MAGIC   table → join here. Add `is_no_school_day` and `is_half_day` boolean flags.
 # MAGIC   Validate with t-test (same method as bread delivery analysis in EDA).
@@ -71,7 +71,7 @@ from pyspark.sql import Window
 
 RUN_MODE = dbutils.widgets.get("run_mode")
 
-CATALOG       = "3sp_analytics_workspace"
+CATALOG       = "YOUR_CATALOG"
 GOLD_SCHEMA   = f"{CATALOG}.gold"
 BRONZE_SCHEMA = f"{CATALOG}.bronze"
 

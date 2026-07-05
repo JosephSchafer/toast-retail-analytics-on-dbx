@@ -21,7 +21,7 @@
 # MAGIC plain-English commentary beneath each one. Every chart has a "What this
 # MAGIC means" section written for a non-data-scientist reader.
 # MAGIC
-# MAGIC **Data source:** `3sp_analytics_workspace.gold.daily_sales_summary`
+# MAGIC **Data source:** `YOUR_CATALOG.gold.daily_sales_summary`
 # MAGIC — 164 days of actual sales data from the store, enriched with weather.
 
 # COMMAND ----------
@@ -101,7 +101,7 @@ df = spark.sql("""
         total_snow_in,
         sunny_hours,
         avg_cloud_cover_pct
-    FROM 3sp_analytics_workspace.gold.daily_sales_summary
+    FROM YOUR_CATALOG.gold.daily_sales_summary
     WHERE record_type = 'actual'
     ORDER BY business_date
 """).toPandas()
@@ -112,7 +112,7 @@ df['business_date'] = pd.to_datetime(df['business_date'])
 # ── Load special events from reference table ──────────────────────────────────
 events_ref = spark.sql("""
     SELECT event_date, event_name, event_type, lower_window, upper_window
-    FROM 3sp_analytics_workspace.reference.store_events
+    FROM YOUR_CATALOG.reference.store_events
     WHERE is_active = true
     ORDER BY event_date
 """).toPandas()

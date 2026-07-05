@@ -67,7 +67,7 @@ warnings.filterwarnings('ignore')
 mlflow.set_registry_uri("databricks-uc")
 client = mlflow.tracking.MlflowClient()
 
-CATALOG    = "3sp_analytics_workspace"
+CATALOG    = "YOUR_CATALOG"
 MODEL_NAME = f"{CATALOG}.default.toast_revenue_prophet"
 
 # Promote new model only if cv_mape is better than current prod by this factor.
@@ -197,7 +197,7 @@ if _should_promote:
         from databricks.sdk import WorkspaceClient
         w = WorkspaceClient()
         nb9_run = w.jobs.run_now(
-            job_id=601248779031413,
+            job_id=YOUR_DAILY_JOB_ID,
             notebook_params={"run_mode": "backfill"},
         )
         print(f"  ✓ NB9 backfill triggered (run_id: {nb9_run.run_id})")

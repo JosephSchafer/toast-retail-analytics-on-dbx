@@ -3,7 +3,7 @@
 # MAGIC # Reference — Item Catalog (Toast Export)
 # MAGIC
 # MAGIC Ingests a Toast item library CSV export into a reference Delta table at
-# MAGIC `3sp_analytics_workspace.reference.item_catalog`.
+# MAGIC `YOUR_CATALOG.reference.item_catalog`.
 # MAGIC
 # MAGIC ## How to use
 # MAGIC
@@ -15,11 +15,11 @@
 # MAGIC
 # MAGIC **2. Upload the CSV to the Databricks Volume**
 # MAGIC
-# MAGIC The notebook reads from `/Volumes/3sp_analytics_workspace/default/raw_toast_data/`.
+# MAGIC The notebook reads from `/Volumes/YOUR_CATALOG/default/raw_toast_data/`.
 # MAGIC To upload a file there:
 # MAGIC
 # MAGIC 1. In the Databricks left sidebar, click **Catalog**
-# MAGIC 2. Navigate to `3sp_analytics_workspace` → `default` → **Volumes** → `raw_toast_data`
+# MAGIC 2. Navigate to `YOUR_CATALOG` → `default` → **Volumes** → `raw_toast_data`
 # MAGIC 3. Click **Upload to this volume** (top right of the volume view)
 # MAGIC 4. Drag your CSV into the upload dialog, or click to browse, then click **Upload**
 # MAGIC 5. Copy the filename — you'll need it in the next step
@@ -66,9 +66,9 @@ import datetime
 # ── 2. CONFIGURATION ──────────────────────────────────────────────────────────
 
 CSV_FILENAME  = dbutils.widgets.get("csv_filename")
-VOLUME_PATH   = f"/Volumes/3sp_analytics_workspace/default/raw_toast_data/{CSV_FILENAME}"
+VOLUME_PATH   = f"/Volumes/YOUR_CATALOG/default/raw_toast_data/{CSV_FILENAME}"
 
-CATALOG       = "3sp_analytics_workspace"
+CATALOG       = "YOUR_CATALOG"
 REF_SCHEMA    = "reference"
 REF_TABLE     = f"{CATALOG}.{REF_SCHEMA}.item_catalog"
 
@@ -361,7 +361,7 @@ column_comments = {
     "item_multi_location_id":   "Toast multi-location item ID. Used when syncing items across locations.",
     "name":                     "Item display name as shown in the Toast item library.",
     "pos_name":                 "Shorter name shown on the POS screen if different from the display name.",
-    "brand":                    "Brand or producer name (e.g. Three Sisters Provisions, Kolsvart).",
+    "brand":                    "Brand or producer name (e.g. [your store name], Kolsvart).",
     "description":              "Full item description from the Toast item library.",
     "item_type":                "Toast item type. DEFAULT for standard items, OPEN_ITEM for variable-price items.",
     "category_group":           "Top level of the menu/inventory hierarchy. Values: Grocery, Alcohol, Cafe Menu, Housewares & Decor, Snacks, Bags, Experiences, Breakfast, Thanksgiving.",
@@ -472,7 +472,7 @@ spark.sql(f"""
             THEN i.item_guid END)                   AS items_matched,
         COUNT(DISTINCT CASE WHEN c.item_id IS NULL
             THEN i.item_guid END)                   AS items_unmatched
-    FROM 3sp_analytics_workspace.silver_sales.order_items_silver i
+    FROM YOUR_CATALOG.silver_sales.order_items_silver i
     LEFT JOIN {REF_TABLE} c ON i.item_guid = c.item_id
 """).show(truncate=False)
 

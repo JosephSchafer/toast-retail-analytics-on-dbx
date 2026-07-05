@@ -3,17 +3,17 @@
 # See https://docs.databricks.com/dev-tools/bundles/index.html for documentation.
 
 bundle:
-  name: databricks-project
+  name: toast-retail-analytics
 
 targets:
   dev:
     mode: development
     default: true
     workspace:
-      host: https://4261785904697758.8.gcp.databricks.com
+      host: https://YOUR_WORKSPACE_HOST
 
   ## Optionally, there could be 'staging' or 'prod' targets here.
   #
   # prod:
   #   workspace:
-  #     host: https://4261785904697758.8.gcp.databricks.com
+  #     host: https://YOUR_WORKSPACE_HOST

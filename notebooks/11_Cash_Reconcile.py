@@ -35,7 +35,7 @@ from pyspark.sql.types import DateType
 
 # COMMAND ----------
 
-CATALOG = "3sp_analytics_workspace"
+CATALOG = "YOUR_CATALOG"
 
 CLOSES_TABLE  = f"{CATALOG}.gold.cash_register_closes"
 MATCHES_TABLE = f"{CATALOG}.gold.cash_audit_matches"

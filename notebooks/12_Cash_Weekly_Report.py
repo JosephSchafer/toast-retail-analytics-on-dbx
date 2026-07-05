@@ -2,7 +2,7 @@
 # MAGIC %md
 # MAGIC # Cash Audit — Weekly Email Report
 # MAGIC
-# MAGIC Builds a weekly cash reconciliation summary and sends it to joe@threesistersprovisions.com.
+# MAGIC Builds a weekly cash reconciliation summary and sends it to YOUR_EMAIL.
 # MAGIC
 # MAGIC **Covers:** the 7-day period ending yesterday (Sunday through Saturday, sent Monday AM).
 # MAGIC
@@ -27,12 +27,12 @@ from pyspark.sql import functions as F
 
 # COMMAND ----------
 
-CATALOG       = "3sp_analytics_workspace"
+CATALOG       = "YOUR_CATALOG"
 MATCHES_TABLE = f"{CATALOG}.gold.cash_audit_matches"
 CLOSES_TABLE  = f"{CATALOG}.gold.cash_register_closes"
 
-RECIPIENT     = "joe@threesistersprovisions.com"
-SUBJECT       = "Weekly Cash Audit Report — Three Sisters Provisions"
+RECIPIENT     = "YOUR_EMAIL"
+SUBJECT       = "Weekly Cash Audit Report — [your store name]"
 
 # Report window: last 7 days ending yesterday
 yesterday  = datetime.date.today() - datetime.timedelta(days=1)
@@ -148,7 +148,7 @@ def variance_label(val):
 
 
 lines = []
-lines.append(f"WEEKLY CASH AUDIT — Three Sisters Provisions")
+lines.append(f"WEEKLY CASH AUDIT — [your store name]")
 lines.append(f"Period: {week_start.strftime('%b %d')} – {yesterday.strftime('%b %d, %Y')}")
 lines.append("=" * 60)
 
@@ -221,7 +221,7 @@ if partial:
 
 lines.append("")
 lines.append("=" * 60)
-lines.append("View full audit: 3sp_analytics_workspace.gold.cash_audit_matches")
+lines.append("View full audit: YOUR_CATALOG.gold.cash_audit_matches")
 lines.append("Monarch: https://app.monarchmoney.com/transactions")
 
 body = "\n".join(lines)

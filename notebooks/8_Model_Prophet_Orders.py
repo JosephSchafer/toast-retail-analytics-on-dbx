@@ -27,13 +27,13 @@
 # MAGIC ## Dependencies
 # MAGIC
 # MAGIC **Reads from:**
-# MAGIC - `3sp_analytics_workspace.gold.forecast_features`
-# MAGIC - `3sp_analytics_workspace.reference.store_events`
+# MAGIC - `YOUR_CATALOG.gold.forecast_features`
+# MAGIC - `YOUR_CATALOG.reference.store_events`
 # MAGIC
 # MAGIC **Writes to:**
 # MAGIC - MLflow experiment: `toast_prophet_orders`
 # MAGIC - MLflow Model Registry: `toast_orders_prophet`
-# MAGIC - `3sp_analytics_workspace.gold.daily_sales_summary` (forecast order_count)
+# MAGIC - `YOUR_CATALOG.gold.daily_sales_summary` (forecast order_count)
 # MAGIC
 # MAGIC **Upstream:** `7_Model_Prophet_Revenue` — run revenue model first
 # MAGIC **Downstream:** `11_Model_Evaluate_Register`
@@ -87,7 +87,7 @@ print("✓ All libraries loaded")
 
 # ── 3. CONFIGURATION ──────────────────────────────────────────────────────────
 
-CATALOG        = "3sp_analytics_workspace"
+CATALOG        = "YOUR_CATALOG"
 FEATURES_TABLE = f"{CATALOG}.gold.forecast_features"
 DAILY_TABLE    = f"{CATALOG}.gold.daily_sales_summary"
 

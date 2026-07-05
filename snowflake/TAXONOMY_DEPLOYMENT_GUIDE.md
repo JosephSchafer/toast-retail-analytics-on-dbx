@@ -1,7 +1,7 @@
 # Taxonomy Classification on Snowflake - How It's Hosted & Deployed
 
 Companion to the field use-case brief. This explains **how Cortex models actually run on Snowflake**
-(the "where is the model hosted?" question), and the exact steps to deploy this on the 3SP account.
+(the "where is the model hosted?" question), and the exact steps to deploy this on the [store abbreviation] account.
 
 ---
 

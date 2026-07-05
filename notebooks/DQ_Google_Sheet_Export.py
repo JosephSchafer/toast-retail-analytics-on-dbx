@@ -2,9 +2,9 @@
 # MAGIC %md
 # MAGIC # DQ — Google Sheet Export Queries
 # MAGIC
-# MAGIC Reference notebook for all SQL queries used to populate the 3SP Analytics
+# MAGIC Reference notebook for all SQL queries used to populate the [store abbreviation] Analytics
 # MAGIC data quality Google Sheet:
-# MAGIC **[3SP DQ Dashboard](https://docs.google.com/spreadsheets/d/1NvTFhmACP_DFiB4sig3xEk8MEZo3tPCebL_XU4lSPj4)**
+# MAGIC **[[store abbreviation] DQ Dashboard](https://docs.google.com/spreadsheets/d/YOUR_GOOGLE_SHEET_ID)**
 # MAGIC
 # MAGIC Each section corresponds to one tab in the sheet. Run the query directly
 # MAGIC to preview or validate the data. To refresh the sheet, re-run the
@@ -48,7 +48,7 @@
 # MAGIC     receiving_unit_quantities,
 # MAGIC     par_min,
 # MAGIC     par_max
-# MAGIC FROM 3sp_analytics_workspace.dq.par_level_suggestions
+# MAGIC FROM YOUR_CATALOG.dq.par_level_suggestions
 # MAGIC ORDER BY category_group, category, name
 
 # COMMAND ----------
@@ -76,7 +76,7 @@
 # MAGIC     avg_daily_units_60d,
 # MAGIC     is_discontinued,
 # MAGIC     discontinued_reason
-# MAGIC FROM 3sp_analytics_workspace.dq.suggested_discontinued
+# MAGIC FROM YOUR_CATALOG.dq.suggested_discontinued
 # MAGIC ORDER BY category_group, category, name
 
 # COMMAND ----------
@@ -99,7 +99,7 @@
 # MAGIC     SELECT
 # MAGIC         item_guid,
 # MAGIC         MAX(business_date) AS last_sold_date
-# MAGIC     FROM 3sp_analytics_workspace.silver_sales.order_items_silver
+# MAGIC     FROM YOUR_CATALOG.silver_sales.order_items_silver
 # MAGIC     WHERE voided = false
 # MAGIC     GROUP BY item_guid
 # MAGIC ),
@@ -107,7 +107,7 @@
 # MAGIC     SELECT
 # MAGIC         item_guid,
 # MAGIC         ROUND(SUM(quantity) / 60.0, 3) AS avg_daily_units_60d
-# MAGIC     FROM 3sp_analytics_workspace.silver_sales.order_items_silver
+# MAGIC     FROM YOUR_CATALOG.silver_sales.order_items_silver
 # MAGIC     WHERE voided = false
 # MAGIC       AND business_date >= DATEADD(DAY, -60, CURRENT_DATE())
 # MAGIC     GROUP BY item_guid
@@ -139,7 +139,7 @@
 # MAGIC                    || COALESCE(CAST(DATEDIFF(CURRENT_DATE(), ls.last_sold_date) AS STRING), '90+')
 # MAGIC                    || ' days'
 # MAGIC         END AS discontinued_reason
-# MAGIC     FROM 3sp_analytics_workspace.reference.item_catalog ic
+# MAGIC     FROM YOUR_CATALOG.reference.item_catalog ic
 # MAGIC     LEFT JOIN last_sales ls  ON ic.item_id = ls.item_guid
 # MAGIC     LEFT JOIN sales_60d s60  ON ic.item_id = s60.item_guid
 # MAGIC     WHERE ic.is_discontinued = false
@@ -188,7 +188,7 @@
 # MAGIC     avg_daily_units_90d,
 # MAGIC     est_weekly_units,
 # MAGIC     barcode
-# MAGIC FROM 3sp_analytics_workspace.dq.missing_barcode
+# MAGIC FROM YOUR_CATALOG.dq.missing_barcode
 # MAGIC ORDER BY category_group, category, name
 
 # COMMAND ----------
@@ -214,7 +214,7 @@
 # MAGIC     avg_daily_units_60d,
 # MAGIC     revenue_60d,
 # MAGIC     cost
-# MAGIC FROM 3sp_analytics_workspace.dq.missing_cost
+# MAGIC FROM YOUR_CATALOG.dq.missing_cost
 # MAGIC ORDER BY category_group, category, name
 
 # COMMAND ----------
@@ -242,7 +242,7 @@
 # MAGIC     avg_daily_units_60d,
 # MAGIC     supplier,
 # MAGIC     supplier_item_id
-# MAGIC FROM 3sp_analytics_workspace.dq.missing_supplier
+# MAGIC FROM YOUR_CATALOG.dq.missing_supplier
 # MAGIC ORDER BY category_group, category, name
 
 # COMMAND ----------
@@ -272,7 +272,7 @@
 # MAGIC     revenue_60d,
 # MAGIC     cost_corrected,
 # MAGIC     price_corrected
-# MAGIC FROM 3sp_analytics_workspace.dq.inverted_margin
+# MAGIC FROM YOUR_CATALOG.dq.inverted_margin
 # MAGIC ORDER BY est_daily_loss_usd DESC, category_group, category, name
 
 # COMMAND ----------
@@ -296,7 +296,7 @@
 # MAGIC     current_sales_category,
 # MAGIC     price,
 # MAGIC     supplier
-# MAGIC FROM 3sp_analytics_workspace.dq.category_drift
+# MAGIC FROM YOUR_CATALOG.dq.category_drift
 # MAGIC ORDER BY category_group, correct_category, name
 
 # COMMAND ----------
@@ -322,5 +322,5 @@
 # MAGIC     suggested_name,
 # MAGIC     auto_fix_candidate,
 # MAGIC     name
-# MAGIC FROM 3sp_analytics_workspace.dq.nomenclature_fix
+# MAGIC FROM YOUR_CATALOG.dq.nomenclature_fix
 # MAGIC ORDER BY category_group, category, current_name
